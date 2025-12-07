@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { io, Socket } from 'socket.io-client';
+import { Socket } from 'socket.io-client';
 import Header from './components/Header';
 import VideoPlayer from './components/VideoPlayer';
 import Playlist from './components/Playlist';
@@ -13,7 +13,7 @@ import {
 import { VideoItem, ChatMessage } from './types';
 
 // Connect to backend
-const socket: Socket = io('http://localhost:3001');
+import { socket } from './socket';
 
 function App() {
   // State
@@ -25,7 +25,7 @@ function App() {
   const [isShareModalOpen, setIsShareModalOpen] = useState<boolean>(false);
   const [isInitialized, setIsInitialized] = useState<boolean>(false);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
-  
+
   // 🎬 NEW: Screen Share State
   const [streamFrame, setStreamFrame] = useState<string | null>(null);
   const [streamerId, setStreamerId] = useState<string | null>(null);
@@ -129,7 +129,7 @@ function App() {
       console.log(`[Streamer Assigned] ${streamerId} (auto: ${isAutomatic})`);
       setStreamerId(streamerId);
       setIsStreamMode(true);
-      
+
       // Also add system message
       const newMessage: ChatMessage = {
         id: Date.now(),

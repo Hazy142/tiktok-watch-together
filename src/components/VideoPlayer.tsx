@@ -7,7 +7,11 @@ interface VideoPlayerProps {
   url: string | null;
   mp4Url?: string;
   videoType?: 'mp4' | 'embed' | 'unknown';
+  useScreenShare?: boolean;
   isProcessing?: boolean;
+  streamFrame?: string | null;
+  streamerId?: string | null;
+  isStreamMode?: boolean;
   currentIndex: number;
   totalVideos: number;
   onNext: () => void;
@@ -20,7 +24,11 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
   url,
   mp4Url,
   videoType = 'unknown',
+  useScreenShare,
   isProcessing,
+  streamFrame,
+  streamerId,
+  isStreamMode,
   currentIndex,
   totalVideos,
   onNext,
@@ -29,7 +37,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
   roomId
 }) => {
   const [countdown, setCountdown] = useState<number | null>(null);
-  const playerRef = useRef<ReactPlayer>(null);
+  const playerRef = useRef<any>(null);
   const [playing, setPlaying] = useState(false);
 
   // TikTok Embed Script laden
@@ -149,7 +157,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
         {videoType === 'mp4' && mp4Url && (
           <ReactPlayer
             ref={playerRef}
-            url={mp4Url}
+            src={mp4Url}
             playing={playing}
             controls={true}
             width="100%"
@@ -161,7 +169,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
               console.error('[Player Error]', e);
             }}
             config={{
-              file: {
+              html: {
                 attributes: {
                   crossOrigin: 'anonymous',
                   playsInline: true
