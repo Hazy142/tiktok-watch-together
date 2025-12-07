@@ -3,8 +3,10 @@ export interface VideoItem {
   url: string;
   addedBy: string;
   addedAt: string;
-  mp4Url?: string;
-  isProcessing?: boolean;
+  mp4Url?: string;           // Extracted MP4 URL (if found)
+  isProcessing?: boolean;    // Is extraction in progress?
+  useScreenShare?: boolean;  // Should use screen share instead of MP4?
+  extractionAttempted?: boolean; // Was extraction attempted?
 }
 
 export interface ChatMessage {
@@ -12,12 +14,5 @@ export interface ChatMessage {
   user: string;
   text: string;
   timestamp: string;
-  isSystem: boolean;
-}
-
-export interface RoomState {
-  id: string;
-  queue: VideoItem[];
-  messages: ChatMessage[];
-  currentVideoIndex: number;
+  isSystem?: boolean;
 }
