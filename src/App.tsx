@@ -25,6 +25,11 @@ function App() {
   const [isShareModalOpen, setIsShareModalOpen] = useState<boolean>(false);
   const [isInitialized, setIsInitialized] = useState<boolean>(false);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
+  
+  // 🎬 NEW: Screen Share State
+  const [streamFrame, setStreamFrame] = useState<string | null>(null);
+  const [streamerId, setStreamerId] = useState<string | null>(null);
+  const [isStreamMode, setIsStreamMode] = useState<boolean>(false);
 
   // Initialize Room
   useEffect(() => {
@@ -65,30 +70,44 @@ function App() {
     };
   }, []);
 
-  // Socket Event Listeners
+  // Socket Event Listeners - ISOLATED PER ROOM
   useEffect(() => {
-    if (!isInitialized) return;
+    if (!isInitialized || roomId === 'INIT') return;
 
-    socket.on('room_state', (state: any) => {
+    console.log(`[Room Init] Connected to room ${roomId}`);
+
+    // Room state handler
+    const handleRoomState = (state: any) => {
+      console.log(`[Room State] Received state for room ${roomId}`, state);
       setQueue(state.queue);
       setMessages(state.messages);
       setCurrentVideoIndex(state.currentVideoIndex);
       setIsPlaying(state.playing);
-    });
+      setStreamerId(state.streamerId);
+      setIsStreamMode(state.isStreamMode);
+    };
 
-    socket.on('update_queue', (newQueue: VideoItem[]) => {
+    // Queue update handler
+    const handleUpdateQueue = (newQueue: VideoItem[]) => {
+      console.log(`[Queue Update] Updated for room ${roomId}`, newQueue);
       setQueue(newQueue);
-    });
+    };
 
-    socket.on('update_index', (index: number) => {
+    // Index update handler
+    const handleUpdateIndex = (index: number) => {
+      console.log(`[Index Update] Changed to ${index} in room ${roomId}`);
       setCurrentVideoIndex(index);
-    });
+    };
 
-    socket.on('new_message', (message: ChatMessage) => {
+    // Chat message handler
+    const handleNewMessage = (message: ChatMessage) => {
+      console.log(`[Message] New message in room ${roomId}`);
       setMessages(prev => [...prev.slice(-49), message]);
-    });
+    };
 
-    socket.on('system_message', (data: { text: string }) => {
+    // System message handler
+    const handleSystemMessage = (data: { text: string }) => {
+      console.log(`[System Message] ${data.text}`);
       const newMessage: ChatMessage = {
         id: Date.now(),
         user: 'SYSTEM',
@@ -97,16 +116,50 @@ function App() {
         isSystem: true,
       };
       setMessages(prev => [...prev.slice(-49), newMessage]);
-    });
+    };
+
+    // 🎬 NEW: Stream Frame Handler (Screen Share)
+    const handleStreamFrame = ({ data, timestamp }: { data: string; timestamp: number }) => {
+      console.log(`[Stream Frame] Received screenshot at ${timestamp}`);
+      setStreamFrame(data);
+    };
+
+    // 🎬 NEW: Streamer Assigned Handler
+    const handleStreamerAssigned = ({ streamerId, message, isAutomatic }: any) => {
+      console.log(`[Streamer Assigned] ${streamerId} (auto: ${isAutomatic})`);
+      setStreamerId(streamerId);
+      setIsStreamMode(true);
+      
+      // Also add system message
+      const newMessage: ChatMessage = {
+        id: Date.now(),
+        user: 'SYSTEM',
+        text: message,
+        timestamp: getCurrentTime(),
+        isSystem: true,
+      };
+      setMessages(prev => [...prev.slice(-49), newMessage]);
+    };
+
+    // Register all listeners
+    socket.on('room_state', handleRoomState);
+    socket.on('update_queue', handleUpdateQueue);
+    socket.on('update_index', handleUpdateIndex);
+    socket.on('new_message', handleNewMessage);
+    socket.on('system_message', handleSystemMessage);
+    socket.on('stream_frame', handleStreamFrame);
+    socket.on('streamer_assigned', handleStreamerAssigned);
 
     return () => {
-      socket.off('room_state');
-      socket.off('update_queue');
-      socket.off('update_index');
-      socket.off('new_message');
-      socket.off('system_message');
+      socket.off('room_state', handleRoomState);
+      socket.off('update_queue', handleUpdateQueue);
+      socket.off('update_index', handleUpdateIndex);
+      socket.off('new_message', handleNewMessage);
+      socket.off('system_message', handleSystemMessage);
+      socket.off('stream_frame', handleStreamFrame);
+      socket.off('streamer_assigned', handleStreamerAssigned);
     };
-  }, [isInitialized]);
+  }, [isInitialized, roomId]);
 
   // Logic
   const handleNewRoom = () => {
@@ -124,14 +177,17 @@ function App() {
       addedBy: userId,
       addedAt: getCurrentTime(),
     };
+    console.log(`[Add Video] Adding to room ${roomId}:`, url);
     socket.emit('add_video', { roomId, video: newItem });
   };
 
   const handleRemoveVideo = (index: number) => {
+    console.log(`[Remove Video] Removing index ${index} from room ${roomId}`);
     socket.emit('remove_video', { roomId, index });
   };
 
   const handleSelectVideo = (index: number) => {
+    console.log(`[Select Video] Changing to index ${index} in room ${roomId}`);
     socket.emit('change_video', { roomId, index });
   };
 
@@ -143,7 +199,7 @@ function App() {
       timestamp: getCurrentTime(),
       isSystem: false,
     };
-    // Optimistic update? No, let's wait for server to ensure order
+    console.log(`[Send Message] Message in room ${roomId}:`, text);
     socket.emit('send_message', { roomId, message: newMessage });
   };
 
@@ -159,7 +215,9 @@ function App() {
     }
   };
 
-  if (!isInitialized) return <div className="flex items-center justify-center h-screen bg-dark text-main">Loading...</div>;
+  if (!isInitialized || roomId === 'INIT') {
+    return <div className="flex items-center justify-center h-screen bg-dark text-main">Loading Room...</div>;
+  }
 
   const currentVideo = queue[currentVideoIndex];
 
@@ -178,6 +236,12 @@ function App() {
           <div className="flex-1 min-h-[400px]">
             <VideoPlayer
               url={currentVideo?.url || null}
+              mp4Url={currentVideo?.mp4Url}
+              useScreenShare={currentVideo?.useScreenShare}
+              isProcessing={currentVideo?.isProcessing}
+              streamFrame={streamFrame}  // 🎬 NEW
+              streamerId={streamerId}     // 🎬 NEW
+              isStreamMode={isStreamMode} // 🎬 NEW
               currentIndex={currentVideoIndex}
               totalVideos={queue.length}
               onNext={handleNext}

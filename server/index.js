@@ -39,8 +39,9 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     name: 'TikTok Watch Together',
-    version: '2.0.0',
+    version: '2.1.0',
     status: 'running',
+    mode: 'Hybrid (Auto-Streamer Fallback)',
     rooms: rooms.size,
     timestamp: new Date().toISOString()
   });
@@ -64,14 +65,14 @@ const getRoom = (roomId) => {
       createdAt: Date.now(),
       lastActivity: Date.now(),
       
-      // NEW: Streamer mode
-      streamerId: null,         // Who is the streamer
-      isStreamMode: false,      // Is streaming active?
+      // Streamer mode
+      streamerId: null,
+      isStreamMode: false,
       streamData: {
-        screenBuffer: null,     // Latest screenshot
+        screenBuffer: null,
         cursorX: 0,
         cursorY: 0,
-        videoSrc: null          // Direct MP4 URL (if available)
+        videoSrc: null
       }
     });
   }
@@ -80,14 +81,14 @@ const getRoom = (roomId) => {
   return room;
 };
 
-// Cleanup inactive rooms (every 30 minutes)
+// Cleanup inactive rooms
 setInterval(() => {
   const now = Date.now();
   const timeout = 30 * 60 * 1000;
   
   for (const [roomId, room] of rooms.entries()) {
     if (room.users.size === 0 && now - room.lastActivity > timeout) {
-      console.log(`Cleaning up inactive room: ${roomId}`);
+      console.log(`[Cleanup] Removing inactive room: ${roomId}`);
       rooms.delete(roomId);
     }
   }
@@ -100,17 +101,27 @@ let scrapingBrowser = null;
 
 const initScrapingBrowser = async () => {
   if (!scrapingBrowser) {
-    scrapingBrowser = await puppeteer.launch({
-      headless: "new",
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-dev-shm-usage',
-        '--window-size=1920,1080',
-        '--disable-gpu'
-      ]
-    });
+    try {
+      scrapingBrowser = await puppeteer.launch({
+        headless: "new",
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-blink-features=AutomationControlled',
+          '--disable-dev-shm-usage',
+          '--window-size=1920,1080',
+          '--disable-gpu',
+          '--disable-extensions',
+          '--disable-plugins',
+          '--disable-sync'
+        ]
+      });
+      console.log('[Browser] Initialized with Stealth Mode');
+    } catch (error) {
+      console.error('[Browser Error]', error.message);
+      scrapingBrowser = null;
+      throw error;
+    }
   }
   return scrapingBrowser;
 };
@@ -132,7 +143,7 @@ const scrapeVideoQueue = async () => {
     
     try {
       if (videoCache.has(url)) {
-        console.log(`[Cache Hit] ${url}`);
+        console.log(`[Cache Hit] ${url.substring(0, 60)}...`);
         resolve(videoCache.get(url));
         continue;
       }
@@ -141,31 +152,53 @@ const scrapeVideoQueue = async () => {
       const page = await browser.newPage();
       
       await page.setUserAgent(
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0'
       );
+      
+      await page.setExtraHTTPHeaders({
+        'Accept-Language': 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none'
+      });
       
       await page.setViewport({ width: 1920, height: 1080 });
       
-      console.log(`[Scraping] Starting: ${url}`);
+      console.log(`[Scraping] Attempting: ${url.substring(0, 60)}...`);
       
       try {
         await page.goto(url, { 
-          waitUntil: 'domcontentloaded', 
-          timeout: 45000,
-          referer: 'https://www.tiktok.com/'
+          waitUntil: 'networkidle0',
+          timeout: 10000  // Short timeout for quick fallback
         });
         
-        await page.waitForSelector('video', { timeout: 20000 });
+        // Try to find video with SHORT timeout
+        try {
+          await page.waitForSelector('video', { timeout: 3000 });
+        } catch (e) {
+          console.log(`[Timeout] No video found - will use Screen Share`);
+          await page.close();
+          resolve(null);
+          continue;
+        }
         
         const videoSrc = await page.evaluate(() => {
           const video = document.querySelector('video');
-          if (!video) return null;
+          if (video) {
+            const src = video.src || (video.querySelector('source')?.src);
+            if (src && src.startsWith('http')) return src;
+          }
           
-          const src = video.src || 
-                     (video.querySelector('source')?.src) ||
-                     video.getAttribute('src');
+          const sources = document.querySelectorAll('video source');
+          for (let source of sources) {
+            const src = source.src || source.getAttribute('src');
+            if (src && src.startsWith('http')) return src;
+          }
           
-          return src && src.startsWith('http') ? src : null;
+          return null;
         });
         
         await page.close();
@@ -177,19 +210,19 @@ const scrapeVideoQueue = async () => {
             videoCache.delete(firstKey);
           }
           
-          console.log(`[Success] ${url}`);
+          console.log(`[Success] MP4 Found! ${url.substring(0, 60)}...`);
           resolve(videoSrc);
         } else {
-          console.log(`[Failed] No video src found: ${url}`);
+          console.log(`[Failed] No MP4 URL - Screen Share will activate`);
           resolve(null);
         }
       } catch (error) {
-        console.error(`[Scrape Error] ${url}: ${error.message}`);
+        console.error(`[Scrape Error] ${error.message}`);
         await page.close();
         resolve(null);
       }
     } catch (error) {
-      console.error(`[Critical Error] ${url}: ${error.message}`);
+      console.error(`[Critical Error] ${error.message}`);
       resolve(null);
     }
   }
@@ -197,7 +230,7 @@ const scrapeVideoQueue = async () => {
   isScrapingActive = false;
 };
 
-setInterval(scrapeVideoQueue, 1000);
+setInterval(scrapeVideoQueue, 500);
 
 const queueVideoScrape = (url, roomId, videoId, socketId) => {
   return new Promise((resolve, reject) => {
@@ -206,7 +239,9 @@ const queueVideoScrape = (url, roomId, videoId, socketId) => {
   });
 };
 
-// ============= SCREEN CAPTURE (Server-side) =============
+// ============= SCREEN CAPTURE =============
+const activeStreams = new Map();
+
 const takeScreenshot = async (url) => {
   try {
     const browser = await initScrapingBrowser();
@@ -217,8 +252,8 @@ const takeScreenshot = async (url) => {
     );
     await page.setViewport({ width: 1920, height: 1080 });
     
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForTimeout(2000); // Wait for content to load
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 10000 });
+    await page.waitForTimeout(1000);
     
     const screenshot = await page.screenshot({ encoding: 'base64' });
     await page.close();
@@ -230,11 +265,10 @@ const takeScreenshot = async (url) => {
   }
 };
 
-// Continuous screen capture for active streams
-const activeStreams = new Map();
-
 const startScreenCapture = async (roomId, url) => {
   if (activeStreams.has(roomId)) return;
+  
+  console.log(`[Stream] Starting screen capture for room ${roomId}`);
   
   activeStreams.set(roomId, setInterval(async () => {
     const screenshot = await takeScreenshot(url);
@@ -244,13 +278,14 @@ const startScreenCapture = async (roomId, url) => {
         timestamp: Date.now()
       });
     }
-  }, 100)); // ~10 FPS stream
+  }, 100));  // 10 FPS
 };
 
 const stopScreenCapture = (roomId) => {
   if (activeStreams.has(roomId)) {
     clearInterval(activeStreams.get(roomId));
     activeStreams.delete(roomId);
+    console.log(`[Stream] Stopped screen capture for room ${roomId}`);
   }
 };
 
@@ -272,7 +307,7 @@ io.on('connection', (socket) => {
       isStreamer: false 
     });
 
-    console.log(`[Join] User ${userId} joined room ${roomId}`);
+    console.log(`[Join] ${userId} joined ${roomId}`);
 
     socket.emit('room_state', {
       queue: room.queue,
@@ -286,7 +321,7 @@ io.on('connection', (socket) => {
 
     io.to(roomId).emit('system_message', {
       id: Date.now(),
-      text: `${userId} joined the room.`,
+      text: `✅ ${userId} joined the room`,
       timestamp: new Date().toLocaleTimeString(),
       isSystem: true
     });
@@ -294,11 +329,9 @@ io.on('connection', (socket) => {
     io.to(roomId).emit('room_users_count', room.users.size);
   });
 
-  // NEW: Become streamer
   socket.on('request_streamer_role', ({ roomId, userId }) => {
     const room = getRoom(roomId);
     
-    // If no streamer, assign this user
     if (!room.streamerId) {
       room.streamerId = userId;
       room.isStreamMode = true;
@@ -306,49 +339,27 @@ io.on('connection', (socket) => {
       
       io.to(roomId).emit('streamer_assigned', {
         streamerId: userId,
-        message: `${userId} is now the streamer. Everyone else will see their screen.`
+        message: `🎬 ${userId} is now the streamer`,
+        isAutomatic: false
       });
       
-      socket.emit('you_are_streamer', true);
-      console.log(`[Streamer] ${userId} is now streamer in ${roomId}`);
-    } else {
-      socket.emit('error', 'Room already has a streamer');
+      console.log(`[Streamer] ${userId} manually became streamer in ${roomId}`);
     }
-  });
-
-  // NEW: Stream frame from streamer's browser
-  socket.on('capture_frame', ({ roomId, frameData }) => {
-    const room = getRoom(roomId);
-    if (room.streamerId === socket.handshake.query.userId) {
-      room.streamData.screenBuffer = frameData;
-      socket.to(roomId).emit('stream_frame', {
-        data: frameData,
-        timestamp: Date.now()
-      });
-    }
-  });
-
-  // NEW: Stream player state from streamer
-  socket.on('streamer_state', ({ roomId, playing, currentTime, videoUrl }) => {
-    const room = getRoom(roomId);
-    room.playing = playing;
-    room.currentTime = currentTime;
-    
-    io.to(roomId).emit('player_state', { 
-      playing, 
-      currentTime,
-      source: 'streamer'
-    });
   });
 
   socket.on('add_video', async ({ roomId, video }) => {
     const room = getRoom(roomId);
     if (!room) return;
+    
+    // Get first user ID for auto-streamer
+    const firstUserId = Array.from(room.users.keys())[0] || 'System';
 
     const videoWithState = { 
       ...video, 
       isProcessing: true,
-      mp4Url: null
+      mp4Url: null,
+      useScreenShare: false,
+      extractionAttempted: false
     };
     
     room.queue.push(videoWithState);
@@ -356,15 +367,17 @@ io.on('connection', (socket) => {
 
     io.to(roomId).emit('system_message', {
       id: Date.now(),
-      text: `🔄 Processing video from ${video.addedBy}...`,
+      text: `⏳ Processing video...`,
       timestamp: new Date().toLocaleTimeString(),
       isSystem: true
     });
 
+    // SHORT timeout: 5 seconds for MP4 extraction
     const timeoutPromise = new Promise(resolve => 
-      setTimeout(() => resolve(null), 30000)
+      setTimeout(() => resolve(null), 5000)  // 5s only!
     );
     
+    console.log(`[Add Video] Attempting MP4 extraction (5s timeout)...`);
     const mp4Url = await Promise.race([
       queueVideoScrape(video.url, roomId, video.id, socket.id),
       timeoutPromise
@@ -372,25 +385,53 @@ io.on('connection', (socket) => {
 
     const videoIndex = room.queue.findIndex(v => v.id === video.id);
     if (videoIndex !== -1) {
+      room.queue[videoIndex].extractionAttempted = true;
       room.queue[videoIndex].mp4Url = mp4Url;
       room.queue[videoIndex].isProcessing = false;
-      io.to(roomId).emit('update_queue', room.queue);
-
+      
       if (mp4Url) {
+        // SUCCESS: MP4 extracted
+        console.log(`[Success] MP4 extracted - using Direct Player`);
+        room.queue[videoIndex].useScreenShare = false;
+        
         io.to(roomId).emit('system_message', {
           id: Date.now(),
-          text: `✅ Video ready! Direct MP4 extracted.`,
+          text: `✅ Perfect sync! Direct MP4 found.`,
           timestamp: new Date().toLocaleTimeString(),
           isSystem: true
         });
       } else {
+        // FAIL: Start Auto-Screenshare
+        console.log(`[Fallback] MP4 extraction failed - starting Screen Share mode`);
+        room.queue[videoIndex].useScreenShare = true;
+        
+        // Assign auto-streamer if not already assigned
+        if (!room.streamerId) {
+          room.streamerId = firstUserId;
+          room.isStreamMode = true;
+          room.users.get(firstUserId).isStreamer = true;
+          
+          // Start screen capture for this URL
+          startScreenCapture(roomId, video.url);
+          
+          io.to(roomId).emit('streamer_assigned', {
+            streamerId: firstUserId,
+            message: `🎬 Auto-started Screen Share (MP4 extraction failed)`,
+            isAutomatic: true
+          });
+          
+          console.log(`[Auto-Streamer] ${firstUserId} assigned to ${roomId}`);
+        }
+        
         io.to(roomId).emit('system_message', {
           id: Date.now(),
-          text: `⚠️ MP4 extraction failed. Streamer must stream from their browser.`,
+          text: `🎬 MP4 extraction failed. Using Screen Share mode for perfect sync!`,
           timestamp: new Date().toLocaleTimeString(),
           isSystem: true
         });
       }
+      
+      io.to(roomId).emit('update_queue', room.queue);
     }
   });
 
@@ -464,7 +505,7 @@ io.on('connection', (socket) => {
     io.to(roomId).emit('start_countdown', 3);
     io.to(roomId).emit('system_message', {
       id: Date.now(),
-      text: '⏱️ Starting countdown: 3... 2... 1... GO!',
+      text: '⏱️ 3... 2... 1... GO!',
       timestamp: new Date().toLocaleTimeString(),
       isSystem: true
     });
@@ -481,7 +522,7 @@ io.on('connection', (socket) => {
 
 // ============= ERROR HANDLING =============
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  console.error('Unhandled Rejection:', reason);
 });
 
 process.on('uncaughtException', (error) => {
@@ -493,14 +534,15 @@ process.on('uncaughtException', (error) => {
 const PORT = process.env.PORT || 3001;
 httpServer.listen(PORT, () => {
   console.log(`
-✅ TikTok Watch Together Server (v2.0.0 - Streamer Mode)
+🚀 TikTok Watch Together Server (v2.1.0 - Hybrid Approach)
    Port: ${PORT}
+   Mode: Auto-Streamer Fallback on MP4 Extraction Failure
    Environment: ${process.env.NODE_ENV || 'development'}
    Timestamp: ${new Date().toISOString()}\n`);
 });
 
 process.on('SIGTERM', async () => {
-  console.log('SIGTERM received, shutting down gracefully...');
+  console.log('SIGTERM received, shutting down...');
   await closeScraper();
   activeStreams.forEach((interval) => clearInterval(interval));
   httpServer.close(() => {
