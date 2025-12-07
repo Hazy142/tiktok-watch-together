@@ -1,18 +1,21 @@
 // ============================================
-// TikTok Watch Together - Content Script v2.0
-// Screen Share Enabled Extension
+// TikTok Watch Together - Content Script v3.1
+// Auto-Follow Sync with MutationObserver
 // ============================================
 
-console.log('🚀 TikTok Watch Together v2.0 Loaded');
+console.log('🚀 TikTok Watch Together v3.1 - Auto-Follow Mode');
 
 // ============ GLOBAL STATE ============
 let socket = null;
 let currentRoom = null;
 let currentUserId = null;
-let isStreamer = false;  // NEW: Track if this user is streaming
-let ignoreSync = false;
-let screenCaptureActive = false;
-let captureInterval = null;
+let isStreamer = false;
+let isSyncing = false;
+
+// Video Tracking
+let lastVideoUrl = null;
+let videoObserver = null;
+let urlCheckInterval = null;
 
 // ============ UI CREATION ============
 const createOverlay = () => {
@@ -35,7 +38,7 @@ const createOverlay = () => {
           <button id="wt-create-room" class="wt-btn wt-btn-secondary">Create New Room</button>
         </div>
         
-        <!-- MODE 2: Connected & Options -->
+        <!-- MODE 2: Connected -->
         <div id="wt-mode-connected" class="wt-mode" style="display: none;">
           <div class="wt-room-info">
             <div class="wt-status-item">
@@ -51,16 +54,10 @@ const createOverlay = () => {
           
           <!-- Streamer Controls -->
           <div id="wt-streamer-controls" style="display: none;">
-            <h4>🎥 Streamer Controls</h4>
-            <button id="wt-btn-start-capture" class="wt-btn wt-btn-danger">▶ Start Screen Share</button>
-            <button id="wt-btn-stop-capture" class="wt-btn wt-btn-secondary" style="display: none;">⏹ Stop Screen Share</button>
-            <p class="wt-help-text" id="wt-capture-status"></p>
-          </div>
-          
-          <!-- Viewer Info -->
-          <div id="wt-viewer-info" style="display: none;">
-            <p class="wt-info-text">⏳ Waiting for streamer...</p>
-            <p class="wt-help-text">Current Streamer: <span id="wt-current-streamer">-</span></p>
+            <h4>🎯 Auto-Follow</h4>
+            <button id="wt-btn-start-sync" class="wt-btn wt-btn-danger">▶ Start Sync</button>
+            <button id="wt-btn-stop-sync" class="wt-btn wt-btn-secondary" style="display: none;">⏹ Stop Sync</button>
+            <p class="wt-help-text" id="wt-sync-status"></p>
           </div>
           
           <!-- Connection Status -->
@@ -74,241 +71,257 @@ const createOverlay = () => {
       </div>
     </div>
   `;
-  
+
   document.body.appendChild(overlay);
   attachEventListeners();
 };
 
 // ============ EVENT LISTENERS ============
 const attachEventListeners = () => {
-  // Toggle overlay
   document.getElementById('wt-toggle-btn').addEventListener('click', () => {
-    const content = document.getElementById('wt-content');
-    const overlay = document.getElementById('wt-overlay');
-    overlay.classList.toggle('minimized');
+    document.getElementById('wt-overlay').classList.toggle('minimized');
   });
-  
-  // Connection mode
+
   document.getElementById('wt-btn-connect').addEventListener('click', () => {
     const roomId = document.getElementById('wt-room-id').value.trim();
     if (roomId) joinRoom(roomId);
     else alert('Please enter a Room ID');
   });
-  
+
   document.getElementById('wt-create-room').addEventListener('click', () => {
     const newRoom = 'room-' + Math.random().toString(36).substr(2, 9);
     document.getElementById('wt-room-id').value = newRoom;
     joinRoom(newRoom);
   });
-  
-  // Streamer controls
-  document.getElementById('wt-btn-start-capture')?.addEventListener('click', startScreenCapture);
-  document.getElementById('wt-btn-stop-capture')?.addEventListener('click', stopScreenCapture);
-  
-  // Disconnect
+
+  document.getElementById('wt-btn-start-sync')?.addEventListener('click', startSync);
+  document.getElementById('wt-btn-stop-sync')?.addEventListener('click', stopSync);
   document.getElementById('wt-btn-disconnect')?.addEventListener('click', disconnectRoom);
-  
-  // Copy room link
+
   document.getElementById('wt-copy-link')?.addEventListener('click', () => {
-    const link = `http://localhost:5173/?room=${currentRoom}`;
-    navigator.clipboard.writeText(link).then(() => {
-      alert('✅ Room link copied!');
-    });
+    const link = `http://localhost:3000/?room=${currentRoom}`;
+    navigator.clipboard.writeText(link).then(() => alert('✅ Room link copied!'));
   });
 };
 
 // ============ ROOM CONNECTION ============
 const joinRoom = (roomId) => {
   if (socket) socket.disconnect();
-  
+
   socket = io('http://localhost:3001');
   currentRoom = roomId;
   currentUserId = 'ext-' + Math.random().toString(36).substr(2, 9);
-  
+
   socket.on('connect', () => {
     console.log('✅ Connected to server');
     updateUI('connected', roomId);
-    
-    // Emit join with extension marker
+
     socket.emit('join_room', {
       roomId,
       userId: currentUserId,
       isExtension: true,
-      isStreamer: true  // Extension user defaults to streamer
+      isStreamer: true
     });
   });
-  
-  // Receive role assignment
+
   socket.on('role_assigned', (data) => {
     console.log('📝 Role assigned:', data);
     isStreamer = data.isStreamer;
     updateStreamerUI(isStreamer);
-    
-    if (!isStreamer) {
-      document.getElementById('wt-current-streamer').textContent = data.streamerName || 'Unknown';
-    }
   });
-  
-  // Receive sync commands from other extension
-  socket.on('player_state', (data) => {
-    handleRemoteSync(data);
-  });
-  
-  // Receive video player commands
-  socket.on('player_play', () => {
-    if (isStreamer) playCurrentVideo();
-  });
-  
-  socket.on('player_pause', () => {
-    if (isStreamer) pauseCurrentVideo();
-  });
-  
+
   socket.on('disconnect', () => {
     console.log('❌ Disconnected');
-    screenCaptureActive = false;
-    stopScreenCapture();
+    stopSync();
     updateUI('disconnected');
   });
 };
 
 const disconnectRoom = () => {
   if (socket) socket.disconnect();
-  screenCaptureActive = false;
-  stopScreenCapture();
+  stopSync();
   updateUI('disconnected');
   currentRoom = null;
 };
 
-// ============ SCREEN CAPTURE (STREAMER) ============
-const startScreenCapture = async () => {
-  if (screenCaptureActive) return;
-  
-  try {
-    console.log('📹 Starting screen capture...');
-    screenCaptureActive = true;
-    
-    document.getElementById('wt-btn-start-capture').style.display = 'none';
-    document.getElementById('wt-btn-stop-capture').style.display = 'block';
-    document.getElementById('wt-capture-status').textContent = '🟢 Streaming...';
-    
-    // Capture frames every 250ms (~4 FPS)
-    captureInterval = setInterval(captureAndSendFrame, 250);
-    
-  } catch (error) {
-    console.error('❌ Screen capture error:', error);
-    document.getElementById('wt-capture-status').textContent = '❌ Error: ' + error.message;
-    screenCaptureActive = false;
+// ============ VIDEO URL DETECTION ============
+// Get current TikTok video URL from page
+const getCurrentVideoUrl = () => {
+  // Method 1: Check URL path for video ID
+  const urlMatch = window.location.href.match(/\/@[\w.-]+\/video\/(\d+)/);
+  if (urlMatch) {
+    return window.location.href.split('?')[0];  // Remove query params
   }
+
+  // Method 2: Look for canonical link
+  const canonicalLink = document.querySelector('link[rel="canonical"]');
+  if (canonicalLink?.href?.includes('/video/')) {
+    return canonicalLink.href;
+  }
+
+  // Method 3: Look for share link in page
+  const shareButton = document.querySelector('[data-e2e="share-icon"]');
+  if (shareButton) {
+    const videoContainer = shareButton.closest('[data-e2e="recommend-list-item-container"]');
+    const link = videoContainer?.querySelector('a[href*="/video/"]');
+    if (link) return link.href.split('?')[0];
+  }
+
+  // Method 4: Parse from For You page video elements
+  const activeVideo = document.querySelector('video[src]');
+  if (activeVideo) {
+    // Try to find the link near the active video
+    const container = activeVideo.closest('[class*="DivItemContainer"]') ||
+      activeVideo.closest('[data-e2e="recommend-list-item-container"]');
+    const videoLink = container?.querySelector('a[href*="/video/"]');
+    if (videoLink) return videoLink.href.split('?')[0];
+  }
+
+  return null;
 };
 
-const stopScreenCapture = () => {
-  if (captureInterval) {
-    clearInterval(captureInterval);
-    captureInterval = null;
-  }
-  
-  screenCaptureActive = false;
-  document.getElementById('wt-btn-start-capture').style.display = 'block';
-  document.getElementById('wt-btn-stop-capture').style.display = 'none';
-  document.getElementById('wt-capture-status').textContent = '⚪ Stopped';
-  
-  // Notify server
-  if (socket) {
-    socket.emit('stream_stopped', { roomId: currentRoom });
-  }
-};
+// ============ SYNC MONITORING ============
+const startSync = () => {
+  if (isSyncing) return;
+  isSyncing = true;
 
-const captureAndSendFrame = () => {
-  try {
-    // Capture main TikTok video container
-    const videoContainer = document.querySelector('[data-e2e="video-player-container"]') ||
-                          document.querySelector('.tiktok-1j4l1fu-VideoContainer') ||
-                          document.querySelector('video')?.parentElement;
-    
-    if (!videoContainer) {
-      console.warn('⚠️ Video container not found');
-      return;
+  console.log('🎯 Sync started');
+
+  // Get initial video URL
+  lastVideoUrl = getCurrentVideoUrl();
+  if (lastVideoUrl) {
+    sendVideoSync(lastVideoUrl);
+  }
+
+  // Start URL check interval (for URL-based navigation)
+  urlCheckInterval = setInterval(() => {
+    const currentUrl = getCurrentVideoUrl();
+    if (currentUrl && currentUrl !== lastVideoUrl) {
+      console.log('📍 Video changed!', { from: lastVideoUrl, to: currentUrl });
+      lastVideoUrl = currentUrl;
+      sendVideoSync(currentUrl);
     }
-    
-    // Use html2canvas for accurate rendering
-    html2canvas(videoContainer, {
-      allowTaint: true,
-      useCORS: true,
-      scale: 0.5  // Reduce quality for bandwidth
-    }).then((canvas) => {
-      const frameData = canvas.toDataURL('image/jpeg', 0.6);  // Compress
-      
-      // Send to server
-      if (socket && currentRoom) {
-        socket.emit('stream_frame', {
-          roomId: currentRoom,
-          frameData,
-          timestamp: Date.now(),
-          streamerId: currentUserId
-        });
+  }, 300);  // Check every 300ms for faster detection
+
+  // Start MutationObserver for DOM changes (for swipe/scroll)
+  startVideoObserver();
+
+  // Attach video event listeners
+  attachVideoListeners();
+
+  // Update UI
+  document.getElementById('wt-btn-start-sync').style.display = 'none';
+  document.getElementById('wt-btn-stop-sync').style.display = 'block';
+  document.getElementById('wt-sync-status').textContent = '🟢 Syncing...';
+};
+
+const startVideoObserver = () => {
+  if (videoObserver) return;
+
+  // Observe DOM changes to detect video switches
+  videoObserver = new MutationObserver((mutations) => {
+    // Debounce - check after DOM settles
+    clearTimeout(window._wtDebounce);
+    window._wtDebounce = setTimeout(() => {
+      const currentUrl = getCurrentVideoUrl();
+      if (currentUrl && currentUrl !== lastVideoUrl) {
+        console.log('👀 MutationObserver detected video change:', currentUrl);
+        lastVideoUrl = currentUrl;
+        sendVideoSync(currentUrl);
+        attachVideoListeners();
       }
-    });
-    
-  } catch (error) {
-    console.error('❌ Frame capture error:', error);
+    }, 200);
+  });
+
+  videoObserver.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: false
+  });
+
+  console.log('👀 MutationObserver started');
+};
+
+const sendVideoSync = (url) => {
+  if (!socket || !currentRoom || !isStreamer || !isSyncing) return;
+
+  socket.emit('sync_navigate', {
+    roomId: currentRoom,
+    url: url,
+    timestamp: Date.now()
+  });
+  console.log('📤 Sent sync_navigate:', url);
+
+  // Update status
+  const status = document.getElementById('wt-sync-status');
+  if (status) status.textContent = `🟢 Synced: ${url.slice(-20)}...`;
+};
+
+const stopSync = () => {
+  isSyncing = false;
+
+  if (urlCheckInterval) {
+    clearInterval(urlCheckInterval);
+    urlCheckInterval = null;
   }
-};
 
-// ============ VIDEO CONTROL (STREAMER) ============
-const playCurrentVideo = () => {
-  const video = findVideo();
-  if (video && video.paused) {
-    video.play().catch(e => console.log('Auto-play blocked:', e));
+  if (videoObserver) {
+    videoObserver.disconnect();
+    videoObserver = null;
   }
+
+  console.log('🎯 Sync stopped');
+
+  const startBtn = document.getElementById('wt-btn-start-sync');
+  const stopBtn = document.getElementById('wt-btn-stop-sync');
+  const statusText = document.getElementById('wt-sync-status');
+
+  if (startBtn) startBtn.style.display = 'block';
+  if (stopBtn) stopBtn.style.display = 'none';
+  if (statusText) statusText.textContent = '⚪ Stopped';
 };
 
-const pauseCurrentVideo = () => {
-  const video = findVideo();
-  if (video && !video.paused) {
-    video.pause();
-  }
-};
-
-const findVideo = () => document.querySelector('video');
-
-// ============ SYNC HANDLING ============
-const handleRemoteSync = (data) => {
-  if (isStreamer) return;  // Only viewers receive sync
-  
-  // Viewers see the stream frame
-  console.log('📩 Sync received:', data);
-};
-
-// Monitor local TikTok video for changes
-setInterval(() => {
-  if (!isStreamer) return;  // Only streamer needs to monitor
-  
-  const video = findVideo();
+// ============ VIDEO EVENT LISTENERS ============
+const attachVideoListeners = () => {
+  const video = document.querySelector('video');
   if (!video || video.dataset.wtAttached) return;
-  
-  console.log('🎥 TikTok video detected, monitoring...');
+
   video.dataset.wtAttached = 'true';
-  
-  // Send play/pause events to other extensions or webapp
+  console.log('🎥 Attached video listeners');
+
   video.addEventListener('play', () => {
-    if (socket && currentRoom && isStreamer) {
-      socket.emit('player_play', { roomId: currentRoom });
+    if (socket && currentRoom && isStreamer && isSyncing) {
+      socket.emit('player_play', {
+        roomId: currentRoom,
+        currentTime: video.currentTime
+      });
     }
   });
-  
+
   video.addEventListener('pause', () => {
-    if (socket && currentRoom && isStreamer) {
-      socket.emit('player_pause', { roomId: currentRoom });
+    if (socket && currentRoom && isStreamer && isSyncing) {
+      socket.emit('player_pause', {
+        roomId: currentRoom,
+        currentTime: video.currentTime
+      });
     }
   });
-  
-}, 1000);
+
+  video.addEventListener('seeked', () => {
+    if (socket && currentRoom && isStreamer && isSyncing) {
+      socket.emit('player_seek', {
+        roomId: currentRoom,
+        currentTime: video.currentTime
+      });
+    }
+  });
+};
 
 // ============ UI UPDATES ============
 const updateUI = (state, roomId = null) => {
   const connectMode = document.getElementById('wt-mode-connect');
   const connectedMode = document.getElementById('wt-mode-connected');
-  
+
   if (state === 'connected') {
     connectMode.style.display = 'none';
     connectedMode.style.display = 'block';
@@ -325,16 +338,13 @@ const updateUI = (state, roomId = null) => {
 
 const updateStreamerUI = (isStreamerRole) => {
   const streamerControls = document.getElementById('wt-streamer-controls');
-  const viewerInfo = document.getElementById('wt-viewer-info');
   const roleDisplay = document.getElementById('wt-role-display');
-  
+
   if (isStreamerRole) {
     streamerControls.style.display = 'block';
-    viewerInfo.style.display = 'none';
     roleDisplay.textContent = '🎬 Streamer';
   } else {
     streamerControls.style.display = 'none';
-    viewerInfo.style.display = 'block';
     roleDisplay.textContent = '👁️ Viewer';
   }
 };

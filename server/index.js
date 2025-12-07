@@ -16,30 +16,23 @@ const io = new Server(httpServer, {
 // ============ IN-MEMORY ROOM STATE ============
 const rooms = new Map();
 
-interface RoomState {
-    id: string;
-    streamer: string | null;
-    viewers: Set<string>;
-    createdAt: number;
-    lastActivity: number;
-}
-
-const getRoomState = (roomId: string): RoomState => {
+const getRoomState = (roomId) => {
     if (!rooms.has(roomId)) {
         rooms.set(roomId, {
             id: roomId,
             streamer: null,
             viewers: new Set(),
+            currentUrl: null,  // NEW: Track current TikTok URL
             createdAt: Date.now(),
             lastActivity: Date.now()
         });
     }
-    return rooms.get(roomId)!;
+    return rooms.get(roomId);
 };
 
 // ============ HTTP ENDPOINTS ============
 app.get('/', (req, res) => {
-    res.send('🚀 TikTok Watch Together Signaling Server v2.0 (Screen Share Enabled)');
+    res.send('🚀 TikTok Watch Together Signaling Server v3.0 (Auto-Follow Sync)');
 });
 
 app.get('/health', (req, res) => {
@@ -58,23 +51,23 @@ io.on('connection', (socket) => {
     // ========== ROOM MANAGEMENT ==========
     socket.on('join_room', (data) => {
         const { roomId, userId, isExtension, isStreamer } = data;
-        
+
         socket.join(roomId);
         const room = getRoomState(roomId);
         room.lastActivity = Date.now();
-        
+
         console.log(`[📍 Join] User ${userId} joined room ${roomId} (Extension: ${isExtension}, Streamer: ${isStreamer})`);
-        
+
         // Assign streamer role
         let actualStreamer = isStreamer && !room.streamer;  // First one to join is streamer
-        
+
         if (actualStreamer) {
             room.streamer = userId;
             console.log(`[🎬 Streamer] ${userId} is now streaming in room ${roomId}`);
         } else {
             room.viewers.add(userId);
         }
-        
+
         // Notify user of role assignment
         socket.emit('role_assigned', {
             isStreamer: actualStreamer,
@@ -83,7 +76,7 @@ io.on('connection', (socket) => {
             streamerName: actualStreamer ? 'You' : room.streamer || 'Unknown',
             totalViewers: room.viewers.size
         });
-        
+
         // Notify room about new user
         socket.to(roomId).emit('user_joined', {
             userId,
@@ -91,7 +84,7 @@ io.on('connection', (socket) => {
             isStreamer: actualStreamer,
             totalUsers: 1 + room.viewers.size
         });
-        
+
         // Send room info to all
         io.to(roomId).emit('room_info', {
             roomId,
@@ -101,31 +94,26 @@ io.on('connection', (socket) => {
         });
     });
 
-    // ========== SCREEN CAPTURE STREAM ==========
-    socket.on('stream_frame', (data) => {
-        const { roomId, frameData, timestamp, streamerId } = data;
-        
-        // Broadcast frame to all viewers in room (except streamer)
-        socket.to(roomId).emit('stream_frame', {
-            frameData,
+    // ========== AUTO-FOLLOW SYNC (URL-BASED) ==========
+    socket.on('sync_navigate', (data) => {
+        const { roomId, url, timestamp } = data;
+        const room = getRoomState(roomId);
+
+        // Store current URL in room state
+        room.currentUrl = url;
+        room.lastActivity = Date.now();
+
+        console.log(`[🔄 Sync Navigate] Room ${roomId} -> ${url}`);
+
+        // Broadcast change_video to all viewers (except streamer)
+        socket.to(roomId).emit('change_video', {
+            url,
             timestamp,
-            streamerId
-        });
-        
-        console.log(`[📹 Frame] Sent frame from ${streamerId} in room ${roomId}`);
-    });
-
-    socket.on('stream_stopped', (data) => {
-        const { roomId } = data;
-        console.log(`[⏹️ Stop] Stream stopped in room ${roomId}`);
-        
-        // Notify viewers
-        socket.to(roomId).emit('stream_stopped', {
-            message: 'Streamer stopped sharing screen'
+            message: 'Streamer navigated to new video'
         });
     });
 
-    // ========== PLAYER CONTROLS (Streamer ↔ Viewers) ==========
+    // ========== PLAYER CONTROLS (Streamer → Viewers) ==========
     socket.on('player_play', (data) => {
         const { roomId, currentTime } = data;
         socket.to(roomId).emit('player_play', {
@@ -156,7 +144,7 @@ io.on('connection', (socket) => {
     // ========== CHAT & MESSAGING ==========
     socket.on('send_message', (data) => {
         const { roomId, message, userId } = data;
-        
+
         io.to(roomId).emit('new_message', {
             ...message,
             userId
@@ -167,10 +155,10 @@ io.on('connection', (socket) => {
     socket.on('request_countdown', (data) => {
         const { roomId } = data;
         console.log(`[⏱️ Countdown] Requested in room ${roomId}`);
-        
+
         let count = 3;
         io.to(roomId).emit('start_countdown', count);
-        
+
         const countdown = setInterval(() => {
             count--;
             if (count >= 0) {
@@ -185,7 +173,7 @@ io.on('connection', (socket) => {
     socket.on('request_room_state', (data) => {
         const { roomId } = data;
         const room = getRoomState(roomId);
-        
+
         socket.emit('room_state', {
             roomId,
             streamer: room.streamer,
@@ -198,7 +186,7 @@ io.on('connection', (socket) => {
     // ========== DISCONNECTION ==========
     socket.on('disconnect', () => {
         console.log(`[❌ Disconnect] Socket ${socket.id}`);
-        
+
         // Find and clean up user from rooms
         for (const [roomId, room] of rooms.entries()) {
             if (room.streamer === socket.id) {
@@ -218,10 +206,10 @@ io.on('connection', (socket) => {
 // ============ ROOM CLEANUP ============
 setInterval(() => {
     const timeout = 30 * 60 * 1000;  // 30 minutes
-    
+
     for (const [roomId, room] of rooms.entries()) {
-        if (room.streamer === null && 
-            room.viewers.size === 0 && 
+        if (room.streamer === null &&
+            room.viewers.size === 0 &&
             Date.now() - room.lastActivity > timeout) {
             rooms.delete(roomId);
             console.log(`[🗑️ Cleanup] Deleted inactive room ${roomId}`);

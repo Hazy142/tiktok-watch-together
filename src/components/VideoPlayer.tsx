@@ -1,17 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
-import ReactPlayer from 'react-player';
 import { Socket } from 'socket.io-client';
 import { TIKTOK_SCRIPT_URL } from '../constants';
 
 interface VideoPlayerProps {
   url: string | null;
-  mp4Url?: string;
-  videoType?: 'mp4' | 'embed' | 'unknown';
-  useScreenShare?: boolean;
-  isProcessing?: boolean;
-  streamFrame?: string | null;
-  streamerId?: string | null;
-  isStreamMode?: boolean;
   currentIndex: number;
   totalVideos: number;
   onNext: () => void;
@@ -22,13 +14,6 @@ interface VideoPlayerProps {
 
 const VideoPlayer: React.FC<VideoPlayerProps> = ({
   url,
-  mp4Url,
-  videoType = 'unknown',
-  useScreenShare,
-  isProcessing,
-  streamFrame,
-  streamerId,
-  isStreamMode,
   currentIndex,
   totalVideos,
   onNext,
@@ -37,12 +22,19 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
   roomId
 }) => {
   const [countdown, setCountdown] = useState<number | null>(null);
-  const playerRef = useRef<any>(null);
-  const [playing, setPlaying] = useState(false);
 
-  // TikTok Embed Script laden
+  // Check if URL is a TikTok video
+  const isTikTokVideo = url?.includes('tiktok.com') && url?.includes('/video/');
+
+  // Extract video ID from URL
+  const getVideoId = (videoUrl: string) => {
+    const match = videoUrl.match(/video\/(\d+)/);
+    return match ? match[1] : '';
+  };
+
+  // Load TikTok embed script
   useEffect(() => {
-    if (videoType === 'embed' && !document.getElementById('tiktok-embed-script')) {
+    if (isTikTokVideo && !document.getElementById('tiktok-embed-script')) {
       const script = document.createElement('script');
       script.id = 'tiktok-embed-script';
       script.src = TIKTOK_SCRIPT_URL;
@@ -50,30 +42,16 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
       document.body.appendChild(script);
     }
 
-    // Embeds neu laden wenn URL ändert
-    if (videoType === 'embed' && (window as any).tiktok?.embed) {
-      (window as any).tiktok.embed.load();
+    // Reload embeds when URL changes
+    if (isTikTokVideo && (window as any).tiktok?.embed) {
+      setTimeout(() => {
+        (window as any).tiktok.embed.load();
+      }, 200);
     }
-  }, [url, videoType]);
+  }, [url, isTikTokVideo]);
 
-  // Socket Event Handlers
+  // Socket countdown handler
   useEffect(() => {
-    const handlePlayerState = (state: { playing: boolean; time: number }) => {
-      setPlaying(state.playing);
-      if (playerRef.current && videoType === 'mp4') {
-        const currentTime = playerRef.current.getCurrentTime();
-        if (Math.abs(currentTime - state.time) > 1) {
-          playerRef.current.seekTo(state.time, 'seconds');
-        }
-      }
-    };
-
-    const handlePlayerSeek = (time: number) => {
-      if (playerRef.current) {
-        playerRef.current.seekTo(time, 'seconds');
-      }
-    };
-
     const handleCountdown = (count: number) => {
       setCountdown(count);
       let current = count;
@@ -83,69 +61,29 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
         if (current <= 0) {
           clearInterval(interval);
           setCountdown(null);
-          setPlaying(true);
         }
       }, 1000);
     };
 
-    socket.on('player_state', handlePlayerState);
-    socket.on('player_seek', handlePlayerSeek);
     socket.on('start_countdown', handleCountdown);
-
     return () => {
-      socket.off('player_state', handlePlayerState);
-      socket.off('player_seek', handlePlayerSeek);
       socket.off('start_countdown', handleCountdown);
     };
-  }, [socket, videoType]);
+  }, [socket]);
 
-  // Play Handler
-  const handlePlay = () => {
-    if (!playing) {
-      setPlaying(true);
-      socket.emit('player_play', {
-        roomId,
-        time: playerRef.current ? playerRef.current.getCurrentTime() : 0
-      });
-    }
-  };
-
-  // Pause Handler
-  const handlePause = () => {
-    if (playing) {
-      setPlaying(false);
-      socket.emit('player_pause', {
-        roomId,
-        time: playerRef.current ? playerRef.current.getCurrentTime() : 0
-      });
-    }
-  };
-
-  // Sync Button Handler
+  // Sync button handler
   const handleSyncRequest = () => {
     socket.emit('request_countdown', { roomId });
   };
 
-  // Video ID extrahieren für Embed
-  const getVideoId = (url: string) => {
-    const match = url.match(/video\/(\d+)/);
-    return match ? match[1] : '';
-  };
-
-  // Loading State
+  // No video state
   if (!url) {
     return (
       <div className="player-container w-full aspect-video bg-black rounded-xl flex items-center justify-center text-gray-500 border border-white/10">
-        Kein Video
-      </div>
-    );
-  }
-
-  // Processing State
-  if (isProcessing) {
-    return (
-      <div className="player-container w-full aspect-video bg-black rounded-xl flex items-center justify-center text-[#00f2ea] border border-white/10 animate-pulse">
-        🚀 Analysiere Video...
+        <div className="text-center">
+          <div className="text-4xl mb-2">📺</div>
+          <div>Kein Video - Warte auf Streamer...</div>
+        </div>
       </div>
     );
   }
@@ -153,38 +91,12 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
   return (
     <div className="player-container w-full bg-black relative flex flex-col group rounded-xl overflow-hidden shadow-2xl border border-white/10">
       <div className="relative aspect-[9/16] md:aspect-video bg-black flex justify-center items-center overflow-hidden">
-        {/* === MP4 MODE (Server sendet Proxy-URL direkt!) === */}
-        {videoType === 'mp4' && mp4Url && (
-          <ReactPlayer
-            ref={playerRef}
-            src={mp4Url}
-            playing={playing}
-            controls={true}
-            width="100%"
-            height="100%"
-            onPlay={handlePlay}
-            onPause={handlePause}
-            onEnded={onNext}
-            onError={(e) => {
-              console.error('[Player Error]', e);
-            }}
-            config={{
-              html: {
-                attributes: {
-                  crossOrigin: 'anonymous',
-                  playsInline: true
-                }
-              }
-            }}
-            style={{ maxHeight: '75vh' }}
-          />
-        )}
 
-        {/* === EMBED MODE (Fallback) === */}
-        {videoType === 'embed' && (
+        {/* TikTok Embed */}
+        {isTikTokVideo && (
           <div className="w-full h-full flex flex-col items-center justify-center bg-gray-900 overflow-y-auto p-4">
-            <div className="bg-yellow-500/10 border border-yellow-500/50 text-yellow-200 px-4 py-2 rounded mb-4 text-sm flex items-center gap-2">
-              ⚠️ <span>Direkt-Stream nicht möglich. Bitte <b>gleichzeitig</b> starten!</span>
+            <div className="bg-[#00f2ea]/10 border border-[#00f2ea]/50 text-[#00f2ea] px-4 py-2 rounded mb-4 text-sm flex items-center gap-2">
+              🔄 <span>Live Sync aktiv! Video vom Streamer:</span>
             </div>
             <blockquote
               className="tiktok-embed"
@@ -198,6 +110,17 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 </a>
               </section>
             </blockquote>
+          </div>
+        )}
+
+        {/* Non-TikTok URL fallback */}
+        {url && !isTikTokVideo && (
+          <div className="w-full h-full flex items-center justify-center text-yellow-400">
+            <div className="text-center">
+              <div className="text-2xl mb-2">⚠️</div>
+              <div>URL nicht unterstützt</div>
+              <div className="text-xs text-gray-500 mt-2">{url}</div>
+            </div>
           </div>
         )}
 
@@ -231,17 +154,11 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
-          {videoType === 'mp4' ? (
-            <span className="text-xs bg-green-500/20 text-green-400 px-2 py-1 rounded border border-green-500/30">
-              ⚡ PROXY SYNC
-            </span>
-          ) : (
-            <span className="text-xs bg-yellow-500/20 text-yellow-400 px-2 py-1 rounded border border-yellow-500/30">
-              ⚠️ EMBED MODE
-            </span>
-          )}
+          <span className="text-xs bg-[#00f2ea]/20 text-[#00f2ea] px-2 py-1 rounded border border-[#00f2ea]/30">
+            🔄 AUTO-FOLLOW
+          </span>
           <div className="text-xs text-gray-500 font-mono bg-white/5 px-2 py-1 rounded">
-            {currentIndex + 1} / {totalVideos}
+            {currentIndex + 1} / {totalVideos || 1}
           </div>
         </div>
 
