@@ -1,108 +1,93 @@
 import React, { useState } from 'react';
-import { VideoItem } from '../types';
-import { validateTikTokUrl, truncateUrl, sanitizeTikTokUrl } from '../constants';
+import { useVideo } from '../context/VideoContext';
+import { useSocket } from '../context/SocketContext';
+import { Video } from '../types';
 
 interface PlaylistProps {
-  queue: VideoItem[];
-  currentIndex: number;
-  onAddVideo: (url: string) => void;
-  onRemoveVideo: (index: number) => void;
-  onSelectVideo: (index: number) => void;
+    queue?: any[]; // For compatibility
+    currentIndex?: number;
+    onAddVideo?: (url: string) => void;
+    onRemoveVideo?: (index: number) => void;
+    onSelectVideo?: (index: number) => void;
 }
 
-const Playlist: React.FC<PlaylistProps> = ({
-  queue,
-  currentIndex,
-  onAddVideo,
-  onRemoveVideo,
-  onSelectVideo
-}) => {
-  const [inputUrl, setInputUrl] = useState('');
-  const [error, setError] = useState('');
+const Playlist: React.FC<PlaylistProps> = (props) => {
+  const { playlist, addVideo, currentVideo, setCurrentVideo } = useVideo();
+  const { socket, roomId } = useSocket();
+  const [urlInput, setUrlInput] = useState('');
+  const [isAdding, setIsAdding] = useState(false);
 
-  const handleAdd = (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
+    if (!urlInput.trim()) return;
 
-    if (!inputUrl.trim()) {
-      setError('Please enter a URL');
-      return;
-    }
-
-    if (!validateTikTokUrl(inputUrl)) {
-      setError('Invalid TikTok URL');
-      return;
-    }
-
-    // 🐛 FIX: Sanitize URL before sending
-    const cleanedUrl = sanitizeTikTokUrl(inputUrl);
+    setIsAdding(true);
     
-    // Double-check it's valid after sanitization
-    if (!cleanedUrl || cleanedUrl.length === 0) {
-      setError('Could not process URL');
-      return;
-    }
+    const video: Video = {
+        id: Math.random().toString(36).substr(2, 9),
+        url: urlInput,
+        title: 'TikTok Video'
+    };
 
-    console.log(`[Playlist] Adding video:`, cleanedUrl);
-    onAddVideo(cleanedUrl);
-    setInputUrl('');
+    socket?.emit('playlist_add', { roomId, video });
+    addVideo(video);
+
+    setUrlInput('');
+    setIsAdding(false);
   };
 
   return (
     <div className="playlist-container glass">
-      <div className="playlist-header">
-        <h3 className="text-lg mb-2">Playlist</h3>
-        <form onSubmit={handleAdd} className="flex gap-sm">
+      <div className="p-4 border-b border-[var(--border)]">
+        <h3 className="text-lg font-bold flex items-center gap-2">
+          <span>🎵</span> Playlist
+          <span className="text-sm font-normal text-muted ml-auto">
+            {playlist.length} videos
+          </span>
+        </h3>
+      </div>
+
+      <div className="p-4 border-b border-[var(--border)]">
+        <form onSubmit={handleSubmit} className="flex gap-sm">
           <input
             type="text"
-            value={inputUrl}
-            onChange={(e) => {
-              setInputUrl(e.target.value);
-              // Clear error when user starts typing
-              if (error) setError('');
-            }}
+            value={urlInput}
+            onChange={(e) => setUrlInput(e.target.value)}
             placeholder="Paste TikTok URL..."
             className="input flex-1"
+            disabled={isAdding}
           />
-          <button type="submit" className="btn btn-primary">
-            Add
+          <button
+            type="submit"
+            className="btn btn-primary whitespace-nowrap"
+            disabled={isAdding}
+          >
+            {isAdding ? 'Adding...' : 'Add'}
           </button>
         </form>
-        {error && <p className="text-sm text-red-500 mt-2">{error}</p>}
       </div>
 
       <div className="playlist-items custom-scrollbar">
-        {queue.length === 0 ? (
-          <div className="text-center text-muted py-8">
-            Queue is empty
+        {playlist.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-40 text-muted opacity-50">
+            <span className="text-2xl mb-2">📺</span>
+            <p>Queue is empty</p>
           </div>
         ) : (
-          queue.map((video, index) => (
+          playlist.map((video, index) => (
             <div
               key={video.id}
-              className={`playlist-item ${index === currentIndex ? 'active' : ''}`}
-              onClick={() => onSelectVideo(index)}
+              className={`playlist-item ${currentVideo?.id === video.id ? 'active' : ''}`}
+              onClick={() => setCurrentVideo(video)}
             >
-              <div className="flex-1 overflow-hidden">
-                <div className="font-medium truncate">
-                  {truncateUrl(video.url, 50)}
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium truncate mb-1">
+                  {video.url}
                 </div>
-                <div className="text-sm text-muted flex justify-between mt-1">
-                  <span>{video.addedBy}</span>
-                  <span>{video.addedAt}</span>
+                <div className="text-xs text-muted flex items-center gap-2">
+                  <span>ID: {video.id}</span>
                 </div>
               </div>
-
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onRemoveVideo(index);
-                }}
-                className="btn btn-ghost p-2 text-muted hover:text-red-500"
-                title="Remove"
-              >
-                ✕
-              </button>
             </div>
           ))
         )}

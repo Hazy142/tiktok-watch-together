@@ -1,15 +1,20 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ChatMessage } from '../types';
+import { useChat } from '../context/ChatContext';
+import { useSocket } from '../context/SocketContext';
+import { Message } from '../types';
 
 interface ChatProps {
-  messages: ChatMessage[];
-  onSendMessage: (text: string) => void;
-  currentUserId: string;
+    messages?: Message[]; // For compatibility
+    onSendMessage?: (text: string) => void;
+    currentUserId?: string;
 }
 
-const Chat: React.FC<ChatProps> = ({ messages, onSendMessage, currentUserId }) => {
+const Chat: React.FC<ChatProps> = (props) => {
+  const { messages, addMessage } = useChat();
+  const { socket, roomId } = useSocket();
   const [inputText, setInputText] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const currentUserId = 'me'; // Placeholder
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -22,7 +27,19 @@ const Chat: React.FC<ChatProps> = ({ messages, onSendMessage, currentUserId }) =
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputText.trim()) return;
-    onSendMessage(inputText);
+
+    const message = {
+        id: Math.random().toString(36).substr(2, 9),
+        userId: currentUserId,
+        text: inputText,
+        timestamp: Date.now()
+    };
+
+    addMessage(message);
+    if (socket) {
+        socket.emit('chat_message', { roomId, message });
+    }
+
     setInputText('');
   };
 
@@ -34,7 +51,7 @@ const Chat: React.FC<ChatProps> = ({ messages, onSendMessage, currentUserId }) =
 
       <div className="chat-messages custom-scrollbar">
         {messages.map((msg) => {
-          if (msg.isSystem) {
+          if (msg.system) {
             return (
               <div key={msg.id} className="message system">
                 {msg.text}
@@ -42,7 +59,7 @@ const Chat: React.FC<ChatProps> = ({ messages, onSendMessage, currentUserId }) =
             );
           }
 
-          const isOwn = msg.user === currentUserId;
+          const isOwn = msg.userId === currentUserId;
 
           return (
             <div
@@ -51,10 +68,10 @@ const Chat: React.FC<ChatProps> = ({ messages, onSendMessage, currentUserId }) =
             >
               <div className="flex items-baseline justify-between gap-2 mb-1">
                 <span className={`text-xs font-bold ${isOwn ? 'text-primary' : 'text-secondary'}`}>
-                  {isOwn ? 'You' : msg.user}
+                  {isOwn ? 'You' : msg.userId}
                 </span>
                 <span className="text-[10px] text-muted opacity-70">
-                  {msg.timestamp}
+                  {new Date(msg.timestamp).toLocaleTimeString()}
                 </span>
               </div>
               <p className="text-sm break-words leading-relaxed">{msg.text}</p>

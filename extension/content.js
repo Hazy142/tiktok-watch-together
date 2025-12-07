@@ -1,148 +1,234 @@
-// TikTok Watch Together Extension v4
-// Minimal: Just detect video changes and sync
-
-console.log('🎬 TikTok Watch Together v4 loaded');
+// TikTok Watch Together - Extension Content Script
+// Handles overlay injection, socket connection, and frame capture
 
 let socket = null;
 let roomId = null;
-let lastVideoUrl = null;
-let observer = null;
+let isStreamer = false;
+let captureInterval = null;
+let streamerId = null;
 
-// Create simple UI
-const createUI = () => {
-  const ui = document.createElement('div');
-  ui.id = 'wt-ui';
-  ui.innerHTML = `
-    <style>
-      #wt-ui {
-        position: fixed;
-        bottom: 20px;
-        right: 20px;
-        background: rgba(0,0,0,0.9);
-        border: 2px solid #00f2ea;
-        border-radius: 12px;
-        padding: 16px;
-        z-index: 99999;
-        font-family: -apple-system, sans-serif;
-        color: white;
-        min-width: 200px;
-      }
-      #wt-ui h3 { margin: 0 0 12px 0; color: #00f2ea; font-size: 14px; }
-      #wt-ui input { 
-        width: 100%; padding: 8px; margin-bottom: 8px; 
-        border: 1px solid #333; border-radius: 6px; 
-        background: #111; color: white; 
-      }
-      #wt-ui button { 
-        width: 100%; padding: 10px; border: none; border-radius: 6px; 
-        background: #00f2ea; color: black; font-weight: bold; cursor: pointer; 
-        margin-bottom: 6px;
-      }
-      #wt-ui button:hover { background: #00d4ce; }
-      #wt-ui .status { font-size: 11px; color: #888; margin-top: 8px; }
-      #wt-ui .connected { color: #00f2ea; }
-    </style>
-    <h3>🎬 TikTok Party</h3>
-    <input id="wt-room" placeholder="Room ID" value="party-${Date.now().toString(36)}">
-    <button id="wt-connect">Start Streaming</button>
-    <div class="status" id="wt-status">Not connected</div>
-  `;
-  document.body.appendChild(ui);
+// Inject CSS
+const link = document.createElement('link');
+link.href = chrome.runtime.getURL('style.css');
+link.type = 'text/css';
+link.rel = 'stylesheet';
+document.head.appendChild(link);
 
-  document.getElementById('wt-connect').onclick = connect;
-};
+// Create Overlay UI
+const overlay = document.createElement('div');
+overlay.id = 'twt-overlay';
+overlay.innerHTML = `
+  <div class="twt-header">
+    <h3>🎵 Watch Together</h3>
+    <button id="twt-minimize">_</button>
+  </div>
+  <div class="twt-content">
+    <div id="twt-setup" class="twt-step active">
+      <button id="twt-create-room" class="twt-btn primary">Create New Room</button>
+      <div class="twt-divider">OR</div>
+      <input type="text" id="twt-room-input" placeholder="Enter Room ID">
+      <button id="twt-join-room" class="twt-btn secondary">Join Room</button>
+    </div>
 
-// Connect to server
-const connect = () => {
-  roomId = document.getElementById('wt-room').value;
-  if (!roomId) return alert('Enter a room ID');
+    <div id="twt-controls" class="twt-step">
+      <div class="twt-status">
+        <span class="status-dot"></span>
+        <span id="twt-status-text">Connected</span>
+      </div>
+      <div class="twt-room-info">
+        <span>Room:</span>
+        <code id="twt-room-id">...</code>
+        <button id="twt-copy-room" title="Copy ID">📋</button>
+      </div>
+      <div class="twt-role-controls">
+        <button id="twt-toggle-stream" class="twt-btn primary">Start Sharing</button>
+        <button id="twt-leave-room" class="twt-btn danger">Leave Room</button>
+      </div>
+      <div class="twt-stats">
+        <div>👥 <span id="twt-viewer-count">0</span></div>
+        <div id="twt-stream-indicator" style="display:none">🔴 LIVE</div>
+      </div>
+    </div>
+  </div>
+`;
+document.body.appendChild(overlay);
 
-  socket = io('http://localhost:3001');
+// UI Event Listeners
+document.getElementById('twt-minimize').addEventListener('click', () => {
+  overlay.classList.toggle('minimized');
+});
+
+document.getElementById('twt-create-room').addEventListener('click', () => {
+  const newRoomId = 'room-' + Math.random().toString(36).substr(2, 9);
+  connectSocket(newRoomId, true);
+});
+
+document.getElementById('twt-join-room').addEventListener('click', () => {
+  const inputRoomId = document.getElementById('twt-room-input').value.trim();
+  if (inputRoomId) {
+    connectSocket(inputRoomId, false);
+  }
+});
+
+document.getElementById('twt-copy-room').addEventListener('click', () => {
+  const roomIdText = document.getElementById('twt-room-id').innerText;
+  navigator.clipboard.writeText(roomIdText);
+});
+
+document.getElementById('twt-leave-room').addEventListener('click', () => {
+  disconnectSocket();
+  switchStep('twt-setup');
+});
+
+document.getElementById('twt-toggle-stream').addEventListener('click', () => {
+  if (captureInterval) {
+    stopStreaming();
+  } else {
+    startStreaming();
+  }
+});
+
+// Socket Connection
+function connectSocket(room, isCreator) {
+  if (socket && socket.connected) {
+      socket.disconnect();
+  }
+
+  // Connect to local signaling server
+  socket = io('http://localhost:3001', {
+      transports: ['websocket'],
+      upgrade: false
+  });
 
   socket.on('connect', () => {
-    socket.emit('join_room', { roomId });
-    document.getElementById('wt-status').textContent = '🟢 Connected - ' + roomId;
-    document.getElementById('wt-status').className = 'status connected';
-    document.getElementById('wt-connect').textContent = 'Streaming...';
-    document.getElementById('wt-connect').disabled = true;
+    console.log('[TWT] Connected to server');
+    roomId = room;
+    isStreamer = isCreator; // Initial intent
 
-    // Start watching for video changes
-    startWatching();
+    socket.emit('join_room', {
+      roomId,
+      isExtension: true,
+      isStreamer: isCreator
+    });
+
+    updateRoomUI(roomId);
+    switchStep('twt-controls');
+    document.getElementById('twt-status-text').innerText = 'Connected';
+    document.querySelector('.status-dot').style.backgroundColor = '#00f2ea';
+  });
+
+  socket.on('role_assigned', (data) => {
+    console.log('[TWT] Role assigned:', data);
+    isStreamer = data.isStreamer;
+    streamerId = data.userId;
+    updateRoleUI();
+  });
+
+  socket.on('user_joined', (data) => {
+    if (data.totalUsers) {
+        document.getElementById('twt-viewer-count').innerText = data.totalUsers - 1;
+    }
+  });
+
+  socket.on('user_left', (data) => {
+    if (data.totalUsers) {
+        document.getElementById('twt-viewer-count').innerText = data.totalUsers - 1;
+    }
   });
 
   socket.on('disconnect', () => {
-    document.getElementById('wt-status').textContent = '🔴 Disconnected';
-    document.getElementById('wt-status').className = 'status';
+    console.log('[TWT] Disconnected');
+    stopStreaming();
+    document.getElementById('twt-status-text').innerText = 'Disconnected';
+    document.querySelector('.status-dot').style.backgroundColor = '#ff0050';
   });
-};
+}
 
-// Watch for video changes
-const startWatching = () => {
-  // Initial sync
-  syncCurrentVideo();
+function disconnectSocket() {
+  if (socket) {
+    socket.disconnect();
+    socket = null;
+  }
+  stopStreaming();
+}
 
-  // Watch DOM for changes (TikTok is SPA, URL doesn't always change)
-  observer = new MutationObserver(() => {
-    syncCurrentVideo();
-  });
+// Streaming Logic
+function startStreaming() {
+  if (!isStreamer) return;
 
-  observer.observe(document.body, {
-    childList: true,
-    subtree: true
-  });
-
-  // Also check periodically as backup
-  setInterval(syncCurrentVideo, 500);
-};
-
-// Get current video URL from DOM
-const getCurrentVideoUrl = () => {
-  // Method 1: Check visible video container
-  const containers = document.querySelectorAll('[data-e2e="recommend-list-item-container"]');
-  for (const container of containers) {
-    const rect = container.getBoundingClientRect();
-    // Check if container is mostly visible
-    if (rect.top >= -100 && rect.top <= window.innerHeight / 2) {
-      const link = container.querySelector('a[href*="/video/"]');
-      if (link) return link.href.split('?')[0];
-    }
+  const videoContainer = document.querySelector('[data-e2e="video-player-container"]');
+  if (!videoContainer) {
+    alert('No video found to stream! Please open a video.');
+    return;
   }
 
-  // Method 2: Check for single video page
-  const match = window.location.href.match(/\/@[\w.-]+\/video\/(\d+)/);
-  if (match) return window.location.href.split('?')[0];
+  document.getElementById('twt-toggle-stream').innerText = 'Stop Sharing';
+  document.getElementById('twt-toggle-stream').classList.add('danger');
+  document.getElementById('twt-stream-indicator').style.display = 'block';
 
-  // Method 3: Find any video link near active video element
-  const video = document.querySelector('video');
-  if (video) {
-    const parent = video.closest('[class*="Container"]');
-    if (parent) {
-      const link = parent.querySelector('a[href*="/video/"]');
-      if (link) return link.href.split('?')[0];
-    }
+  // Start capture loop
+  captureInterval = setInterval(() => {
+    captureAndSendFrame(videoContainer);
+  }, 250); // 4 FPS
+}
+
+function stopStreaming() {
+  if (captureInterval) {
+    clearInterval(captureInterval);
+    captureInterval = null;
   }
 
-  return null;
-};
-
-// Sync current video to server
-const syncCurrentVideo = () => {
-  const url = getCurrentVideoUrl();
-
-  if (url && url !== lastVideoUrl && url.includes('/video/')) {
-    console.log('📤 New video detected:', url);
-    lastVideoUrl = url;
-
-    if (socket && roomId) {
-      socket.emit('sync_video', { roomId, url });
-      document.getElementById('wt-status').textContent = '🟢 Synced: ...' + url.slice(-25);
-    }
+  if (socket && roomId) {
+      socket.emit('stream_stopped', { roomId });
   }
-};
 
-// Initialize
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', createUI);
-} else {
-  createUI();
+  document.getElementById('twt-toggle-stream').innerText = 'Start Sharing';
+  document.getElementById('twt-toggle-stream').classList.remove('danger');
+  document.getElementById('twt-stream-indicator').style.display = 'none';
+}
+
+function captureAndSendFrame(container) {
+  if (!socket || !socket.connected) return;
+
+  // html2canvas should now be available from manifest injection
+  if (typeof html2canvas === 'undefined') {
+      console.error('[TWT] html2canvas not found!');
+      return;
+  }
+
+  html2canvas(container, {
+      scale: 0.5,
+      useCORS: true,
+      allowTaint: true,
+      logging: false
+  }).then(canvas => {
+      const frameData = canvas.toDataURL('image/jpeg', 0.6);
+      socket.emit('stream_frame', {
+          roomId,
+          frameData,
+          timestamp: Date.now(),
+          streamerId
+      });
+  }).catch(err => {
+      console.error('[TWT] Capture error:', err);
+  });
+}
+
+// Helper Functions
+function switchStep(stepId) {
+  document.querySelectorAll('.twt-step').forEach(el => el.classList.remove('active'));
+  document.getElementById(stepId).classList.add('active');
+}
+
+function updateRoomUI(id) {
+  document.getElementById('twt-room-id').innerText = id;
+}
+
+function updateRoleUI() {
+  const streamBtn = document.getElementById('twt-toggle-stream');
+  if (isStreamer) {
+    streamBtn.style.display = 'block';
+  } else {
+    streamBtn.style.display = 'none';
+  }
 }
