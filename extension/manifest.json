@@ -1,40 +1,37 @@
 {
-    "manifest_version": 3,
-    "name": "TikTok Watch Together",
-    "version": "1.0",
-    "description": "Watch TikToks in sync with friends!",
-    "permissions": [
-        "activeTab",
-        "scripting"
-    ],
-    "host_permissions": [
-        "https://www.tiktok.com/*",
-        "http://localhost:3001/*"
-    ],
-    "content_scripts": [
-        {
-            "matches": [
-                "https://www.tiktok.com/*"
-            ],
-            "js": [
-                "socket.io.min.js",
-                "content.js"
-            ],
-            "css": [
-                "style.css"
-            ],
-            "run_at": "document_end"
-        }
-    ],
-    "web_accessible_resources": [
-        {
-            "resources": [
-                "style.css",
-                "socket.io.min.js"
-            ],
-            "matches": [
-                "https://www.tiktok.com/*"
-            ]
-        }
-    ]
+  "manifest_version": 3,
+  "name": "TikTok Watch Together",
+  "version": "2.0.0",
+  "description": "Watch TikTok videos together in real-time with screen sharing",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "webRequest"
+  ],
+  "host_permissions": [
+    "https://www.tiktok.com/*",
+    "http://localhost:3001/*",
+    "http://localhost:5173/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://www.tiktok.com/*"],
+      "js": ["socket.io.min.js", "content.js"],
+      "css": ["style.css"],
+      "run_at": "document_end"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "TikTok Watch Together"
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  }
 }

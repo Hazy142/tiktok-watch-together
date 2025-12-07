@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TikTok Watch Together</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 400px;
+      background: linear-gradient(135deg, #000000 0%, #1a1a2e 100%);
+      color: #ffffff;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 13px;
+    }
+
+    .popup-container {
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid rgba(0, 242, 234, 0.2);
+      padding-bottom: 12px;
+    }
+
+    .header-icon {
+      font-size: 24px;
+    }
+
+    .header-title {
+      flex: 1;
+    }
+
+    .header-title h1 {
+      font-size: 16px;
+      font-weight: 700;
+      color: #00f2ea;
+      margin: 0;
+    }
+
+    .header-title p {
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.6);
+      margin: 0;
+    }
+
+    .status-card {
+      background: rgba(0, 242, 234, 0.08);
+      border: 1px solid rgba(0, 242, 234, 0.2);
+      border-left: 3px solid #00f2ea;
+      padding: 12px;
+      border-radius: 6px;
+    }
+
+    .status-item {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    .status-item:last-child {
+      margin-bottom: 0;
+    }
+
+    .status-label {
+      font-weight: 600;
+      color: #00f2ea;
+      text-transform: uppercase;
+      font-size: 11px;
+      letter-spacing: 0.5px;
+    }
+
+    .status-value {
+      color: rgba(255, 255, 255, 0.8);
+    }
+
+    .info-box {
+      background: rgba(255, 255, 255, 0.05);
+      padding: 12px;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      font-size: 12px;
+      line-height: 1.5;
+      color: rgba(255, 255, 255, 0.7);
+    }
+
+    .feature-list {
+      list-style: none;
+      padding: 12px;
+      background: rgba(0, 242, 234, 0.08);
+      border-radius: 6px;
+      border: 1px solid rgba(0, 242, 234, 0.1);
+    }
+
+    .feature-list li {
+      padding: 4px 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+    }
+
+    .feature-list li:before {
+      content: "✓";
+      color: #00f2ea;
+      font-weight: bold;
+    }
+
+    .button-group {
+      display: flex;
+      gap: 10px;
+    }
+
+    .btn {
+      flex: 1;
+      padding: 10px;
+      border: none;
+      border-radius: 6px;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 12px;
+      transition: all 0.2s;
+      text-align: center;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #00f2ea 0%, #00d9d9 100%);
+      color: #000000;
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(0, 242, 234, 0.4);
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.1);
+      color: #00f2ea;
+      border: 1px solid rgba(0, 242, 234, 0.3);
+    }
+
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.15);
+    }
+
+    .version {
+      font-size: 10px;
+      color: rgba(255, 255, 255, 0.4);
+      text-align: center;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      padding-top: 12px;
+      margin-top: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="popup-container">
+    <!-- Header -->
+    <div class="header">
+      <div class="header-icon">🎬</div>
+      <div class="header-title">
+        <h1>TikTok Party</h1>
+        <p>Watch Together v2.0</p>
+      </div>
+    </div>
+
+    <!-- Status -->
+    <div class="status-card">
+      <div class="status-item">
+        <span class="status-label">Status</span>
+        <span class="status-value" id="status-text">🟢 Ready</span>
+      </div>
+      <div class="status-item">
+        <span class="status-label">Extension</span>
+        <span class="status-value">v2.0</span>
+      </div>
+      <div class="status-item">
+        <span class="status-label">Features</span>
+        <span class="status-value">Screen Share + Sync</span>
+      </div>
+    </div>
+
+    <!-- Features -->
+    <ul class="feature-list">
+      <li>Real-time screen sharing</li>
+      <li>Synchronized playback</li>
+      <li>Multi-user rooms</li>
+      <li>TikTok direct integration</li>
+    </ul>
+
+    <!-- Info -->
+    <div class="info-box">
+      <strong>How it works:</strong><br>
+      1. Click on TikTok.com<br>
+      2. Click the extension icon<br>
+      3. Create or join a room<br>
+      4. Share screen with viewers
+    </div>
+
+    <!-- Buttons -->
+    <div class="button-group">
+      <button class="btn btn-primary" id="open-web-app">📱 Open Web App</button>
+      <button class="btn btn-secondary" id="docs-link">📖 Docs</button>
+    </div>
+
+    <!-- Version -->
+    <div class="version">
+      TikTok Watch Together Extension v2.0 | © 2025
+    </div>
+  </div>
+
+  <script>
+    document.getElementById('open-web-app')?.addEventListener('click', () => {
+      chrome.tabs.create({ url: 'http://localhost:5173' });
+    });
+
+    document.getElementById('docs-link')?.addEventListener('click', () => {
+      chrome.tabs.create({
+        url: 'https://github.com/Hazy142/tiktok-watch-together#readme'
+      });
+    });
+  </script>
+</body>
+</html>

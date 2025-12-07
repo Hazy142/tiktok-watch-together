@@ -5,51 +5,244 @@ import { Server } from 'socket.io';
 const app = express();
 const httpServer = createServer(app);
 
-// CORS Config for Extension
+// ============ SOCKET.IO CONFIG ============
 const io = new Server(httpServer, {
     cors: {
-        origin: "*", // Allow all origins (needed for Extension content script)
+        origin: "*",
         methods: ["GET", "POST"]
     }
 });
 
+// ============ IN-MEMORY ROOM STATE ============
+const rooms = new Map();
+
+interface RoomState {
+    id: string;
+    streamer: string | null;
+    viewers: Set<string>;
+    createdAt: number;
+    lastActivity: number;
+}
+
+const getRoomState = (roomId: string): RoomState => {
+    if (!rooms.has(roomId)) {
+        rooms.set(roomId, {
+            id: roomId,
+            streamer: null,
+            viewers: new Set(),
+            createdAt: Date.now(),
+            lastActivity: Date.now()
+        });
+    }
+    return rooms.get(roomId)!;
+};
+
+// ============ HTTP ENDPOINTS ============
 app.get('/', (req, res) => {
-    res.send('TikTok Watch Together Signaling Server is running 🚀');
+    res.send('🚀 TikTok Watch Together Signaling Server v2.0 (Screen Share Enabled)');
 });
 
+app.get('/health', (req, res) => {
+    res.json({
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
+        rooms: rooms.size,
+        uptime: process.uptime()
+    });
+});
+
+// ============ SOCKET.IO EVENT HANDLERS ============
 io.on('connection', (socket) => {
-    console.log(`[Connect] Socket ${socket.id}`);
+    console.log(`[✅ Connect] Socket ${socket.id}`);
 
-    socket.on('join_room', (roomId) => {
+    // ========== ROOM MANAGEMENT ==========
+    socket.on('join_room', (data) => {
+        const { roomId, userId, isExtension, isStreamer } = data;
+        
         socket.join(roomId);
-        console.log(`[Join] User ${socket.id} joined room ${roomId}`);
-        socket.emit('joined', roomId);
+        const room = getRoomState(roomId);
+        room.lastActivity = Date.now();
+        
+        console.log(`[📍 Join] User ${userId} joined room ${roomId} (Extension: ${isExtension}, Streamer: ${isStreamer})`);
+        
+        // Assign streamer role
+        let actualStreamer = isStreamer && !room.streamer;  // First one to join is streamer
+        
+        if (actualStreamer) {
+            room.streamer = userId;
+            console.log(`[🎬 Streamer] ${userId} is now streaming in room ${roomId}`);
+        } else {
+            room.viewers.add(userId);
+        }
+        
+        // Notify user of role assignment
+        socket.emit('role_assigned', {
+            isStreamer: actualStreamer,
+            roomId,
+            userId,
+            streamerName: actualStreamer ? 'You' : room.streamer || 'Unknown',
+            totalViewers: room.viewers.size
+        });
+        
+        // Notify room about new user
+        socket.to(roomId).emit('user_joined', {
+            userId,
+            userName: userId,
+            isStreamer: actualStreamer,
+            totalUsers: 1 + room.viewers.size
+        });
+        
+        // Send room info to all
+        io.to(roomId).emit('room_info', {
+            roomId,
+            streamer: room.streamer,
+            viewers: Array.from(room.viewers),
+            userCount: 1 + room.viewers.size
+        });
     });
 
-    // Relay Events
-    socket.on('player_play', ({ roomId, currentTime }) => {
-        // Broadcast to everyone else in the room
-        socket.to(roomId).emit('player_state', { state: 'playing', currentTime });
-        console.log(`[Play] Room ${roomId} @ ${currentTime}`);
+    // ========== SCREEN CAPTURE STREAM ==========
+    socket.on('stream_frame', (data) => {
+        const { roomId, frameData, timestamp, streamerId } = data;
+        
+        // Broadcast frame to all viewers in room (except streamer)
+        socket.to(roomId).emit('stream_frame', {
+            frameData,
+            timestamp,
+            streamerId
+        });
+        
+        console.log(`[📹 Frame] Sent frame from ${streamerId} in room ${roomId}`);
     });
 
-    socket.on('player_pause', ({ roomId, currentTime }) => {
-        socket.to(roomId).emit('player_state', { state: 'paused', currentTime });
-        console.log(`[Pause] Room ${roomId} @ ${currentTime}`);
+    socket.on('stream_stopped', (data) => {
+        const { roomId } = data;
+        console.log(`[⏹️ Stop] Stream stopped in room ${roomId}`);
+        
+        // Notify viewers
+        socket.to(roomId).emit('stream_stopped', {
+            message: 'Streamer stopped sharing screen'
+        });
     });
 
-    socket.on('player_seek', ({ roomId, currentTime }) => {
-        socket.to(roomId).emit('player_state', { state: 'seek', currentTime });
-        console.log(`[Seek] Room ${roomId} @ ${currentTime}`);
+    // ========== PLAYER CONTROLS (Streamer ↔ Viewers) ==========
+    socket.on('player_play', (data) => {
+        const { roomId, currentTime } = data;
+        socket.to(roomId).emit('player_play', {
+            currentTime,
+            timestamp: Date.now()
+        });
+        console.log(`[▶️ Play] Room ${roomId} @ ${currentTime}s`);
     });
 
+    socket.on('player_pause', (data) => {
+        const { roomId, currentTime } = data;
+        socket.to(roomId).emit('player_pause', {
+            currentTime,
+            timestamp: Date.now()
+        });
+        console.log(`[⏸️ Pause] Room ${roomId} @ ${currentTime}s`);
+    });
+
+    socket.on('player_seek', (data) => {
+        const { roomId, currentTime } = data;
+        socket.to(roomId).emit('player_seek', {
+            currentTime,
+            timestamp: Date.now()
+        });
+        console.log(`[⏩ Seek] Room ${roomId} @ ${currentTime}s`);
+    });
+
+    // ========== CHAT & MESSAGING ==========
+    socket.on('send_message', (data) => {
+        const { roomId, message, userId } = data;
+        
+        io.to(roomId).emit('new_message', {
+            ...message,
+            userId
+        });
+        console.log(`[💬 Message] ${userId}: ${message.text}`);
+    });
+
+    socket.on('request_countdown', (data) => {
+        const { roomId } = data;
+        console.log(`[⏱️ Countdown] Requested in room ${roomId}`);
+        
+        let count = 3;
+        io.to(roomId).emit('start_countdown', count);
+        
+        const countdown = setInterval(() => {
+            count--;
+            if (count >= 0) {
+                io.to(roomId).emit('start_countdown', count);
+            } else {
+                clearInterval(countdown);
+            }
+        }, 1000);
+    });
+
+    // ========== SYNC STATE EXCHANGE ==========
+    socket.on('request_room_state', (data) => {
+        const { roomId } = data;
+        const room = getRoomState(roomId);
+        
+        socket.emit('room_state', {
+            roomId,
+            streamer: room.streamer,
+            viewers: Array.from(room.viewers),
+            userCount: 1 + room.viewers.size,
+            createdAt: room.createdAt
+        });
+    });
+
+    // ========== DISCONNECTION ==========
     socket.on('disconnect', () => {
-        console.log(`[Disconnect] Socket ${socket.id}`);
+        console.log(`[❌ Disconnect] Socket ${socket.id}`);
+        
+        // Find and clean up user from rooms
+        for (const [roomId, room] of rooms.entries()) {
+            if (room.streamer === socket.id) {
+                console.log(`[🎬 Streamer Left] ${socket.id} left room ${roomId}`);
+                room.streamer = null;
+                io.to(roomId).emit('streamer_left', {
+                    message: 'Streamer disconnected'
+                });
+            } else if (room.viewers.has(socket.id)) {
+                room.viewers.delete(socket.id);
+                console.log(`[👁️ Viewer Left] ${socket.id} left room ${roomId}`);
+            }
+        }
     });
 });
 
-const PORT = 3001;
+// ============ ROOM CLEANUP ============
+setInterval(() => {
+    const timeout = 30 * 60 * 1000;  // 30 minutes
+    
+    for (const [roomId, room] of rooms.entries()) {
+        if (room.streamer === null && 
+            room.viewers.size === 0 && 
+            Date.now() - room.lastActivity > timeout) {
+            rooms.delete(roomId);
+            console.log(`[🗑️ Cleanup] Deleted inactive room ${roomId}`);
+        }
+    }
+}, 30 * 60 * 1000);
+
+// ============ SERVER STARTUP ============
+const PORT = process.env.PORT || 3001;
 httpServer.listen(PORT, () => {
-    console.log(`\n📡 SIGNALING SERVER STARTED ON PORT ${PORT}`);
-    console.log(`   Allows connections from: TikTok Extension`);
+    console.log(`
+📡 SIGNALING SERVER STARTED`);
+    console.log(`   Port: ${PORT}`);
+    console.log(`   Features: Screen Share, Room Management, Player Sync`);
+    console.log(`   Health Check: GET http://localhost:${PORT}/health\n`);
+});
+
+process.on('SIGINT', () => {
+    console.log('\n🛑 Shutting down gracefully...');
+    httpServer.close(() => {
+        console.log('✅ Server stopped');
+        process.exit(0);
+    });
 });
