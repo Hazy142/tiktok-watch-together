@@ -1,16 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react';
 import ReactPlayer from 'react-player';
-import { TIKTOK_SCRIPT_URL } from '../constants';
 import { Socket } from 'socket.io-client';
+import { TIKTOK_SCRIPT_URL } from '../constants';
 
 interface VideoPlayerProps {
   url: string | null;
   mp4Url?: string;
+  videoType?: 'mp4' | 'embed' | 'unknown';
   useScreenShare?: boolean;
   isProcessing?: boolean;
-  streamFrame?: string | null;      // 🎬 NEW: from App state
-  streamerId?: string | null;       // 🎬 NEW: from App state
-  isStreamMode?: boolean;           // 🎬 NEW: from App state
+  streamFrame?: string | null;
+  streamerId?: string | null;
+  isStreamMode?: boolean;
   currentIndex: number;
   totalVideos: number;
   onNext: () => void;
@@ -22,11 +23,12 @@ interface VideoPlayerProps {
 const VideoPlayer: React.FC<VideoPlayerProps> = ({
   url,
   mp4Url,
+  videoType = 'unknown',
   useScreenShare,
   isProcessing,
-  streamFrame,      // 🎬 NEW
-  streamerId,       // 🎬 NEW
-  isStreamMode,     // 🎬 NEW
+  streamFrame,
+  streamerId,
+  isStreamMode,
   currentIndex,
   totalVideos,
   onNext,
@@ -35,75 +37,69 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
   roomId
 }) => {
   const [countdown, setCountdown] = useState<number | null>(null);
-  const playerRef = useRef<ReactPlayer>(null);
+  const playerRef = useRef<any>(null);
   const [playing, setPlaying] = useState(false);
 
-  // TikTok Embed Script Loading
+  // TikTok Embed Script laden
   useEffect(() => {
-    if (!mp4Url && !useScreenShare && !isStreamMode && url) {
-      const scriptId = 'tiktok-embed-script';
-      if (!document.getElementById(scriptId)) {
-        const script = document.createElement('script');
-        script.id = scriptId;
-        script.src = TIKTOK_SCRIPT_URL;
-        script.async = true;
-        document.body.appendChild(script);
-      }
+    if (videoType === 'embed' && !document.getElementById('tiktok-embed-script')) {
+      const script = document.createElement('script');
+      script.id = 'tiktok-embed-script';
+      script.src = TIKTOK_SCRIPT_URL;
+      script.async = true;
+      document.body.appendChild(script);
     }
-  }, [mp4Url, useScreenShare, isStreamMode, url]);
 
-  useEffect(() => {
-    if (!mp4Url && !useScreenShare && !isStreamMode && window.tiktok && window.tiktok.embed) {
-      window.tiktok.embed.load();
+    // Embeds neu laden wenn URL ändert
+    if (videoType === 'embed' && (window as any).tiktok?.embed) {
+      (window as any).tiktok.embed.load();
     }
-  }, [url, mp4Url, useScreenShare, isStreamMode]);
+  }, [url, videoType]);
 
-  // Socket Events for Sync (Only for MP4)
+  // Socket Event Handlers
   useEffect(() => {
-    if (!mp4Url || useScreenShare || isStreamMode) return;
-
-    socket.on('player_state', (state: { playing: boolean, time: number }) => {
+    const handlePlayerState = (state: { playing: boolean; time: number }) => {
       setPlaying(state.playing);
-      if (playerRef.current && Math.abs(playerRef.current.getCurrentTime() - state.time) > 2) {
-        playerRef.current.seekTo(state.time);
+      if (playerRef.current && videoType === 'mp4') {
+        const currentTime = playerRef.current.getCurrentTime();
+        if (Math.abs(currentTime - state.time) > 1) {
+          playerRef.current.seekTo(state.time, 'seconds');
+        }
       }
-    });
+    };
 
-    socket.on('player_seek', (time: number) => {
+    const handlePlayerSeek = (time: number) => {
       if (playerRef.current) {
-        playerRef.current.seekTo(time);
+        playerRef.current.seekTo(time, 'seconds');
       }
-    });
-
-    return () => {
-      socket.off('player_state');
-      socket.off('player_seek');
     };
-  }, [socket, mp4Url, useScreenShare, isStreamMode]);
 
-  // Countdown Logic
-  useEffect(() => {
-    socket.on('start_countdown', (count: number) => {
+    const handleCountdown = (count: number) => {
       setCountdown(count);
-      if (count > 0) {
-        const interval = setInterval(() => {
-          setCountdown(prev => {
-            if (prev === 1) {
-              setTimeout(() => setCountdown(null), 1000);
-              return 0;
-            }
-            return prev !== null && prev > 0 ? prev - 1 : null;
-          });
-        }, 1000);
-      }
-    });
+      let current = count;
+      const interval = setInterval(() => {
+        current--;
+        setCountdown(current);
+        if (current <= 0) {
+          clearInterval(interval);
+          setCountdown(null);
+          setPlaying(true);
+        }
+      }, 1000);
+    };
+
+    socket.on('player_state', handlePlayerState);
+    socket.on('player_seek', handlePlayerSeek);
+    socket.on('start_countdown', handleCountdown);
 
     return () => {
-      socket.off('start_countdown');
+      socket.off('player_state', handlePlayerState);
+      socket.off('player_seek', handlePlayerSeek);
+      socket.off('start_countdown', handleCountdown);
     };
-  }, [socket]);
+  }, [socket, videoType]);
 
-  // Handlers
+  // Play Handler
   const handlePlay = () => {
     if (!playing) {
       setPlaying(true);
@@ -114,6 +110,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
   };
 
+  // Pause Handler
   const handlePause = () => {
     if (playing) {
       setPlaying(false);
@@ -124,77 +121,43 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
   };
 
-  const handleSyncClick = () => {
+  // Sync Button Handler
+  const handleSyncRequest = () => {
     socket.emit('request_countdown', { roomId });
   };
 
-  const handleForceSync = () => {
-    socket.emit('change_video', { roomId, index: currentIndex });
+  // Video ID extrahieren für Embed
+  const getVideoId = (url: string) => {
+    const match = url.match(/video\/(\d+)/);
+    return match ? match[1] : '';
   };
 
-  // Render
+  // Loading State
   if (!url) {
     return (
-      <div className="player-container flex items-center justify-center text-muted">
-        <div className="text-center">
-          <h3 className="text-xl mb-2">No video playing</h3>
-          <p>Add a TikTok link to the playlist to start watching.</p>
-        </div>
+      <div className="player-container w-full aspect-video bg-black rounded-xl flex items-center justify-center text-gray-500 border border-white/10">
+        Kein Video
       </div>
     );
   }
 
+  // Processing State
   if (isProcessing) {
     return (
-      <div className="player-container flex items-center justify-center text-muted">
-        <div className="text-center animate-pulse">
-          <h3 className="text-xl mb-2">Processing Video...</h3>
-          <p>Attempting MP4 extraction (5s timeout)</p>
-          <p className="text-sm mt-2">Will auto-switch to Screen Share if needed.</p>
-        </div>
+      <div className="player-container w-full aspect-video bg-black rounded-xl flex items-center justify-center text-[#00f2ea] border border-white/10 animate-pulse">
+        🚀 Analysiere Video...
       </div>
     );
   }
 
-  // Extract Video ID for embed fallback
-  const videoIdMatch = url.match(/video\/(\d+)/);
-  const videoId = videoIdMatch ? videoIdMatch[1] : '';
-
   return (
-    <div className="player-container h-full w-full flex flex-col relative group bg-black">
-      <div className="flex-1 flex items-center justify-center overflow-hidden relative">
-
-        {/* 🎬 SCREEN SHARE MODE - Check streamFrame from props */}
-        {(useScreenShare || isStreamMode) && streamFrame ? (
-          <div className="w-full h-full flex flex-col items-center justify-center relative">
-            <img 
-              src={streamFrame} 
-              alt="Stream" 
-              className="w-full h-full object-contain"
-              style={{ background: 'black' }}
-            />
-            <div className="absolute top-4 left-4 bg-red-600 text-white px-3 py-1 rounded-full text-sm font-bold animate-pulse">
-              🔴 LIVE STREAM (10 FPS)
-            </div>
-            {streamerId && (
-              <div className="absolute bottom-4 left-4 bg-gray-900/80 text-gray-300 px-3 py-1 rounded text-xs">
-                Streamer: {streamerId}
-              </div>
-            )}
-          </div>
-        ) : (useScreenShare || isStreamMode) ? (
-          // Waiting for stream
-          <div className="w-full h-full flex flex-col items-center justify-center bg-black">
-            <div className="text-center animate-pulse">
-              <p className="text-white mb-2">🎬 Waiting for stream...</p>
-              <p className="text-gray-400 text-sm">Connecting to screen share</p>
-            </div>
-          </div>
-        ) : mp4Url ? (
-          // DIRECT MP4 PLAYER
+    <div className="player-container w-full bg-black relative flex flex-col group rounded-xl overflow-hidden shadow-2xl border border-white/10">
+      <div className="relative aspect-[9/16] md:aspect-video bg-black flex justify-center items-center overflow-hidden">
+        {/* === MP4 MODE (Server sendet Proxy-URL direkt!) === */}
+        {videoType === 'mp4' && mp4Url && (
           <ReactPlayer
             ref={playerRef}
-            url={mp4Url}
+            src={mp4Url}
             playing={playing}
             controls={true}
             width="100%"
@@ -202,97 +165,97 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
             onPlay={handlePlay}
             onPause={handlePause}
             onEnded={onNext}
+            onError={(e) => {
+              console.error('[Player Error]', e);
+            }}
+            config={{
+              html: {
+                attributes: {
+                  crossOrigin: 'anonymous',
+                  playsInline: true
+                }
+              }
+            }}
+            style={{ maxHeight: '75vh' }}
           />
-        ) : (
-          // FALLBACK: TikTok Embed
-          <blockquote
-            className="tiktok-embed"
-            cite={url}
-            data-video-id={videoId}
-            style={{ maxWidth: '100%', minWidth: '325px' }}
-          >
-            <section>
-              <a target="_blank" href={url} rel="noreferrer">
-                {url}
-              </a>
-            </section>
-          </blockquote>
+        )}
+
+        {/* === EMBED MODE (Fallback) === */}
+        {videoType === 'embed' && (
+          <div className="w-full h-full flex flex-col items-center justify-center bg-gray-900 overflow-y-auto p-4">
+            <div className="bg-yellow-500/10 border border-yellow-500/50 text-yellow-200 px-4 py-2 rounded mb-4 text-sm flex items-center gap-2">
+              ⚠️ <span>Direkt-Stream nicht möglich. Bitte <b>gleichzeitig</b> starten!</span>
+            </div>
+            <blockquote
+              className="tiktok-embed"
+              cite={url}
+              data-video-id={getVideoId(url)}
+              style={{ maxWidth: '325px', minWidth: '325px' }}
+            >
+              <section>
+                <a target="_blank" rel="noopener noreferrer" href={url}>
+                  {url}
+                </a>
+              </section>
+            </blockquote>
+          </div>
         )}
 
         {/* Countdown Overlay */}
-        {countdown !== null && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-50 pointer-events-none">
-            <div className="text-9xl font-bold text-primary animate-pulse">
-              {countdown === 0 ? "PLAY!" : countdown}
+        {countdown !== null && countdown > 0 && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/60 z-50 pointer-events-none">
+            <div className="text-9xl font-bold text-[#00f2ea] animate-bounce">
+              {countdown}
             </div>
           </div>
         )}
       </div>
 
-      {/* Controls */}
-      <div className="player-controls flex items-center justify-between z-10">
-        <div className="flex items-center gap-md">
+      {/* Controls Bar */}
+      <div className="bg-[#0a0a0a] p-3 flex items-center justify-between border-t border-white/10">
+        <div className="flex gap-3">
           <button
             onClick={onPrev}
             disabled={currentIndex === 0}
-            className={`btn btn-icon ${currentIndex === 0 ? 'opacity-50 cursor-not-allowed' : 'btn-ghost'}`}
+            className="text-white hover:text-[#00f2ea] disabled:opacity-30 transition-colors font-bold text-sm"
           >
-            Prev
+            ⏮ PREV
           </button>
-
-          <span className="text-sm font-mono">
-            {currentIndex + 1} / {totalVideos}
-          </span>
-
           <button
             onClick={onNext}
             disabled={currentIndex === totalVideos - 1}
-            className={`btn btn-icon ${currentIndex === totalVideos - 1 ? 'opacity-50 cursor-not-allowed' : 'btn-ghost'}`}
+            className="text-white hover:text-[#00f2ea] disabled:opacity-30 transition-colors font-bold text-sm"
           >
-            Next
+            NEXT ⏭
           </button>
         </div>
 
         <div className="flex items-center gap-2">
-          {mp4Url && !useScreenShare && !isStreamMode && (
-            <span className="text-xs text-green-400 border border-green-400 px-2 py-0.5 rounded">
-              ✅ Synced
+          {videoType === 'mp4' ? (
+            <span className="text-xs bg-green-500/20 text-green-400 px-2 py-1 rounded border border-green-500/30">
+              ⚡ PROXY SYNC
+            </span>
+          ) : (
+            <span className="text-xs bg-yellow-500/20 text-yellow-400 px-2 py-1 rounded border border-yellow-500/30">
+              ⚠️ EMBED MODE
             </span>
           )}
+          <div className="text-xs text-gray-500 font-mono bg-white/5 px-2 py-1 rounded">
+            {currentIndex + 1} / {totalVideos}
+          </div>
+        </div>
 
-          {(useScreenShare || isStreamMode) && (
-            <span className="text-xs text-red-400 border border-red-400 px-2 py-0.5 rounded animate-pulse">
-              🎬 Screen Share
-            </span>
-          )}
-
+        <div>
           <button
-            onClick={handleForceSync}
-            className="btn btn-ghost text-xs text-muted hover:text-white"
-            title="Force everyone to jump to this video"
+            onClick={handleSyncRequest}
+            className="bg-[#ff0050] hover:bg-[#d60043] text-white text-xs font-bold py-1.5 px-3 rounded shadow-lg shadow-red-900/20"
           >
-            Resync All
+            SYNC (3-2-1)
           </button>
-
-          {!mp4Url && !useScreenShare && !isStreamMode && (
-            <button
-              onClick={handleSyncClick}
-              className="btn btn-secondary text-xs"
-              title="Count down 3-2-1 to help everyone press play at the same time"
-            >
-              Sync Play (3-2-1)
-            </button>
-          )}
         </div>
       </div>
     </div>
   );
 };
-
-declare global {
-  interface Window {
-    tiktok: any;
-  }
-}
 
 export default VideoPlayer;

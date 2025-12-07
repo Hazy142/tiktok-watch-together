@@ -1,9 +1,9 @@
 {
   "name": "tiktok-watch-together",
   "private": true,
-  "version": "1.0.0",
+  "version": "3.0.0",
   "type": "module",
-  "description": "Real-time synchronized TikTok video watching with friends",
+  "description": "Real-time synchronized TikTok video watching with friends using official oEmbed API",
   "author": "Hazy142",
   "license": "MIT",
   "scripts": {
@@ -17,7 +17,6 @@
   },
   "dependencies": {
     "express": "^5.2.1",
-    "puppeteer": "^24.32.0",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
     "react-player": "^3.4.0",
