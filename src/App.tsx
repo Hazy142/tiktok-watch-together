@@ -143,7 +143,6 @@ function App() {
       timestamp: getCurrentTime(),
       isSystem: false,
     };
-    // Optimistic update? No, let's wait for server to ensure order
     socket.emit('send_message', { roomId, message: newMessage });
   };
 
@@ -178,6 +177,9 @@ function App() {
           <div className="flex-1 min-h-[400px]">
             <VideoPlayer
               url={currentVideo?.url || null}
+              mp4Url={currentVideo?.mp4Url}
+              useScreenShare={currentVideo?.useScreenShare}
+              isProcessing={currentVideo?.isProcessing}
               currentIndex={currentVideoIndex}
               totalVideos={queue.length}
               onNext={handleNext}
