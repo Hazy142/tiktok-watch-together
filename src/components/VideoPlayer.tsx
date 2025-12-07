@@ -5,8 +5,9 @@ import { Socket } from 'socket.io-client';
 
 interface VideoPlayerProps {
   url: string | null;
-  mp4Url?: string; // New prop
-  isProcessing?: boolean; // New prop
+  mp4Url?: string;
+  useScreenShare?: boolean;
+  isProcessing?: boolean;
   currentIndex: number;
   totalVideos: number;
   onNext: () => void;
@@ -18,6 +19,7 @@ interface VideoPlayerProps {
 const VideoPlayer: React.FC<VideoPlayerProps> = ({
   url,
   mp4Url,
+  useScreenShare,
   isProcessing,
   currentIndex,
   totalVideos,
@@ -29,10 +31,11 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [countdown, setCountdown] = useState<number | null>(null);
   const playerRef = useRef<ReactPlayer>(null);
   const [playing, setPlaying] = useState(false);
+  const [streamFrame, setStreamFrame] = useState<string | null>(null);
 
   // TikTok Embed Script Loading
   useEffect(() => {
-    if (!mp4Url && url) {
+    if (!mp4Url && !useScreenShare && url) {
       const scriptId = 'tiktok-embed-script';
       if (!document.getElementById(scriptId)) {
         const script = document.createElement('script');
@@ -42,17 +45,30 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
         document.body.appendChild(script);
       }
     }
-  }, [mp4Url, url]);
+  }, [mp4Url, useScreenShare, url]);
 
   useEffect(() => {
-    if (!mp4Url && window.tiktok && window.tiktok.embed) {
+    if (!mp4Url && !useScreenShare && window.tiktok && window.tiktok.embed) {
       window.tiktok.embed.load();
     }
-  }, [url, mp4Url]);
+  }, [url, mp4Url, useScreenShare]);
+
+  // Stream Frame Handler (Screen Share)
+  useEffect(() => {
+    if (!useScreenShare) return;
+
+    socket.on('stream_frame', ({ data }) => {
+      setStreamFrame(data);
+    });
+
+    return () => {
+      socket.off('stream_frame');
+    };
+  }, [socket, useScreenShare]);
 
   // Socket Events for Sync (Only for MP4)
   useEffect(() => {
-    if (!mp4Url) return;
+    if (!mp4Url || useScreenShare) return;
 
     socket.on('player_state', (state: { playing: boolean, time: number }) => {
       setPlaying(state.playing);
@@ -71,7 +87,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
       socket.off('player_state');
       socket.off('player_seek');
     };
-  }, [socket, mp4Url]);
+  }, [socket, mp4Url, useScreenShare]);
 
   // Countdown Logic
   useEffect(() => {
@@ -141,8 +157,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
       <div className="player-container flex items-center justify-center text-muted">
         <div className="text-center animate-pulse">
           <h3 className="text-xl mb-2">Processing Video...</h3>
-          <p>Extracting direct link for perfect sync.</p>
-          <p className="text-sm mt-2">This may take a few seconds.</p>
+          <p>Attempting MP4 extraction (5s timeout)</p>
+          <p className="text-sm mt-2">Will auto-switch to Screen Share if needed.</p>
         </div>
       </div>
     );
@@ -156,8 +172,20 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
     <div className="player-container h-full w-full flex flex-col relative group bg-black">
       <div className="flex-1 flex items-center justify-center overflow-hidden relative">
 
-        {mp4Url ? (
-          // Direct MP4 Player (Perfect Sync)
+        {useScreenShare && streamFrame ? (
+          // SCREEN SHARE MODE
+          <div className="w-full h-full flex flex-col items-center justify-center relative">
+            <img 
+              src={streamFrame} 
+              alt="Stream" 
+              className="w-full h-full object-contain"
+            />
+            <div className="absolute top-4 left-4 bg-red-600 text-white px-3 py-1 rounded-full text-sm font-bold animate-pulse">
+              🔴 LIVE STREAM (10 FPS)
+            </div>
+          </div>
+        ) : mp4Url ? (
+          // DIRECT MP4 PLAYER
           <ReactPlayer
             ref={playerRef}
             url={mp4Url}
@@ -167,10 +195,10 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
             height="100%"
             onPlay={handlePlay}
             onPause={handlePause}
-            onEnded={onNext} // Auto Next works here!
+            onEnded={onNext}
           />
         ) : (
-          // Fallback Embed
+          // FALLBACK: TikTok Embed
           <blockquote
             className="tiktok-embed"
             cite={url}
@@ -220,7 +248,17 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
-          {mp4Url && <span className="text-xs text-green-400 border border-green-400 px-2 py-0.5 rounded">Synced</span>}
+          {mp4Url && !useScreenShare && (
+            <span className="text-xs text-green-400 border border-green-400 px-2 py-0.5 rounded">
+              ✅ Synced
+            </span>
+          )}
+
+          {useScreenShare && (
+            <span className="text-xs text-red-400 border border-red-400 px-2 py-0.5 rounded animate-pulse">
+              🎬 Screen Share
+            </span>
+          )}
 
           <button
             onClick={handleForceSync}
@@ -230,7 +268,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({
             Resync All
           </button>
 
-          {!mp4Url && (
+          {!mp4Url && !useScreenShare && (
             <button
               onClick={handleSyncClick}
               className="btn btn-secondary text-xs"
