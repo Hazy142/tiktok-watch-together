@@ -1,0 +1,18 @@
+{
+    "name": "tiktok-watch-together-server",
+    "version": "1.0.0",
+    "description": "Signaling server for TikTok Watch Together Extension",
+    "main": "index.js",
+    "type": "module",
+    "scripts": {
+        "start": "node index.js",
+        "dev": "nodemon index.js"
+    },
+    "dependencies": {
+        "express": "^4.18.2",
+        "socket.io": "^4.7.4"
+    },
+    "devDependencies": {
+        "nodemon": "^3.0.3"
+    }
+}
