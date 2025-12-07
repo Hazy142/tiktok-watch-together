@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { VideoItem } from '../types';
-import { validateTikTokUrl, truncateUrl } from '../constants';
+import { validateTikTokUrl, truncateUrl, sanitizeTikTokUrl } from '../constants';
 
 interface PlaylistProps {
   queue: VideoItem[];
@@ -24,14 +24,27 @@ const Playlist: React.FC<PlaylistProps> = ({
     e.preventDefault();
     setError('');
 
-    if (!inputUrl.trim()) return;
+    if (!inputUrl.trim()) {
+      setError('Please enter a URL');
+      return;
+    }
 
     if (!validateTikTokUrl(inputUrl)) {
       setError('Invalid TikTok URL');
       return;
     }
 
-    onAddVideo(inputUrl);
+    // 🐛 FIX: Sanitize URL before sending
+    const cleanedUrl = sanitizeTikTokUrl(inputUrl);
+    
+    // Double-check it's valid after sanitization
+    if (!cleanedUrl || cleanedUrl.length === 0) {
+      setError('Could not process URL');
+      return;
+    }
+
+    console.log(`[Playlist] Adding video:`, cleanedUrl);
+    onAddVideo(cleanedUrl);
     setInputUrl('');
   };
 
@@ -43,7 +56,11 @@ const Playlist: React.FC<PlaylistProps> = ({
           <input
             type="text"
             value={inputUrl}
-            onChange={(e) => setInputUrl(e.target.value)}
+            onChange={(e) => {
+              setInputUrl(e.target.value);
+              // Clear error when user starts typing
+              if (error) setError('');
+            }}
             placeholder="Paste TikTok URL..."
             className="input flex-1"
           />
