@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TikTok Watch Together",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Watch TikTok videos together in real-time with screen sharing",
   "permissions": [
     "activeTab",
@@ -20,6 +20,7 @@
         "https://www.tiktok.com/*"
       ],
       "js": [
+        "html2canvas.min.js",
         "socket.io.min.js",
         "content.js"
       ],

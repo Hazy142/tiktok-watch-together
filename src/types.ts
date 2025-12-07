@@ -1,18 +1,21 @@
-export interface VideoItem {
-  id: number;
+export interface Video {
+  id: string;
   url: string;
-  addedBy: string;
-  addedAt: string;
-  mp4Url?: string;           // Extracted MP4 URL (if found)
-  isProcessing?: boolean;    // Is extraction in progress?
-  useScreenShare?: boolean;  // Should use screen share instead of MP4?
-  extractionAttempted?: boolean; // Was extraction attempted?
+  title?: string;
+  thumbnail?: string;
+  duration?: number;
 }
 
-export interface ChatMessage {
-  id: number;
-  user: string;
+export interface Message {
+  id: string;
+  userId: string;
   text: string;
-  timestamp: string;
-  isSystem?: boolean;
+  timestamp: number;
+  system?: boolean;
+}
+
+export interface User {
+  id: string;
+  name: string;
+  avatar?: string;
 }
