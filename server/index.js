@@ -39,7 +39,7 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     name: 'TikTok Watch Together',
-    version: '2.0.0',
+    version: '2.0.1',
     status: 'running',
     rooms: rooms.size,
     timestamp: new Date().toISOString()
@@ -65,13 +65,13 @@ const getRoom = (roomId) => {
       lastActivity: Date.now(),
       
       // NEW: Streamer mode
-      streamerId: null,         // Who is the streamer
-      isStreamMode: false,      // Is streaming active?
+      streamerId: null,
+      isStreamMode: false,
       streamData: {
-        screenBuffer: null,     // Latest screenshot
+        screenBuffer: null,
         cursorX: 0,
         cursorY: 0,
-        videoSrc: null          // Direct MP4 URL (if available)
+        videoSrc: null
       }
     });
   }
@@ -98,19 +98,33 @@ const scraperQueue = [];
 let isScrapingActive = false;
 let scrapingBrowser = null;
 
+// 🐛 FIX: Stealth Mode für Puppeteer
 const initScrapingBrowser = async () => {
   if (!scrapingBrowser) {
-    scrapingBrowser = await puppeteer.launch({
-      headless: "new",
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-dev-shm-usage',
-        '--window-size=1920,1080',
-        '--disable-gpu'
-      ]
-    });
+    try {
+      scrapingBrowser = await puppeteer.launch({
+        headless: "new",
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-blink-features=AutomationControlled',
+          '--disable-dev-shm-usage',
+          '--window-size=1920,1080',
+          '--disable-gpu',
+          '--disable-extensions',
+          '--disable-plugins',
+          '--disable-sync',
+          '--disable-translate',
+          '--disable-background-networking',
+          '--disable-client-side-phishing-detection'
+        ]
+      });
+      console.log('[Browser] Puppeteer Browser initialized with Stealth Mode');
+    } catch (error) {
+      console.error('[Browser Error]', error.message);
+      scrapingBrowser = null;
+      throw error;
+    }
   }
   return scrapingBrowser;
 };
@@ -132,7 +146,7 @@ const scrapeVideoQueue = async () => {
     
     try {
       if (videoCache.has(url)) {
-        console.log(`[Cache Hit] ${url}`);
+        console.log(`[Cache Hit] ${url.substring(0, 60)}...`);
         resolve(videoCache.get(url));
         continue;
       }
@@ -140,32 +154,69 @@ const scrapeVideoQueue = async () => {
       const browser = await initScrapingBrowser();
       const page = await browser.newPage();
       
+      // 🐛 FIX: Realistic Browser Headers
       await page.setUserAgent(
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0'
       );
+      
+      // 🐛 FIX: Extra headers to bypass detection
+      await page.setExtraHTTPHeaders({
+        'Accept-Language': 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none'
+      });
       
       await page.setViewport({ width: 1920, height: 1080 });
       
-      console.log(`[Scraping] Starting: ${url}`);
+      console.log(`[Scraping] Starting: ${url.substring(0, 60)}...`);
       
       try {
+        // 🐛 FIX: Go to page direktly (nicht mit referer)
         await page.goto(url, { 
-          waitUntil: 'domcontentloaded', 
-          timeout: 45000,
-          referer: 'https://www.tiktok.com/'
+          waitUntil: 'networkidle0',
+          timeout: 45000
         });
         
-        await page.waitForSelector('video', { timeout: 20000 });
+        // 🐛 FIX: Wait für video tag
+        try {
+          await page.waitForSelector('video', { timeout: 15000 });
+        } catch (e) {
+          console.log(`[Video Timeout] Video tag not found for ${url.substring(0, 60)}...`);
+          await page.close();
+          resolve(null);
+          continue;
+        }
         
+        // 🐛 FIX: Better video extraction
         const videoSrc = await page.evaluate(() => {
+          // Method 1: Direct video tag
           const video = document.querySelector('video');
-          if (!video) return null;
+          if (video) {
+            const src = video.src || 
+                       (video.querySelector('source')?.src) ||
+                       video.getAttribute('src');
+            if (src && src.startsWith('http')) return src;
+          }
           
-          const src = video.src || 
-                     (video.querySelector('source')?.src) ||
-                     video.getAttribute('src');
+          // Method 2: Check all sources
+          const sources = document.querySelectorAll('video source');
+          for (let source of sources) {
+            const src = source.src || source.getAttribute('src');
+            if (src && src.startsWith('http')) return src;
+          }
           
-          return src && src.startsWith('http') ? src : null;
+          // Method 3: Check data attributes
+          const allElements = document.querySelectorAll('[data-src], [src*="http"]');
+          for (let el of allElements) {
+            const src = el.getAttribute('data-src') || el.getAttribute('src');
+            if (src && src.includes('.mp4')) return src;
+          }
+          
+          return null;
         });
         
         await page.close();
@@ -177,19 +228,20 @@ const scrapeVideoQueue = async () => {
             videoCache.delete(firstKey);
           }
           
-          console.log(`[Success] ${url}`);
+          console.log(`[Success] Found MP4 for ${url.substring(0, 60)}...`);
           resolve(videoSrc);
         } else {
-          console.log(`[Failed] No video src found: ${url}`);
+          console.log(`[Failed] No video src found for ${url.substring(0, 60)}...`);
+          console.log(`         -> Using Streamer Mode instead`);
           resolve(null);
         }
       } catch (error) {
-        console.error(`[Scrape Error] ${url}: ${error.message}`);
+        console.error(`[Scrape Error] ${url.substring(0, 60)}...: ${error.message}`);
         await page.close();
         resolve(null);
       }
     } catch (error) {
-      console.error(`[Critical Error] ${url}: ${error.message}`);
+      console.error(`[Critical Error] ${error.message}`);
       resolve(null);
     }
   }
@@ -197,7 +249,7 @@ const scrapeVideoQueue = async () => {
   isScrapingActive = false;
 };
 
-setInterval(scrapeVideoQueue, 1000);
+setInterval(scrapeVideoQueue, 500);
 
 const queueVideoScrape = (url, roomId, videoId, socketId) => {
   return new Promise((resolve, reject) => {
@@ -218,7 +270,7 @@ const takeScreenshot = async (url) => {
     await page.setViewport({ width: 1920, height: 1080 });
     
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForTimeout(2000); // Wait for content to load
+    await page.waitForTimeout(2000);
     
     const screenshot = await page.screenshot({ encoding: 'base64' });
     await page.close();
@@ -230,7 +282,6 @@ const takeScreenshot = async (url) => {
   }
 };
 
-// Continuous screen capture for active streams
 const activeStreams = new Map();
 
 const startScreenCapture = async (roomId, url) => {
@@ -244,7 +295,7 @@ const startScreenCapture = async (roomId, url) => {
         timestamp: Date.now()
       });
     }
-  }, 100)); // ~10 FPS stream
+  }, 100));
 };
 
 const stopScreenCapture = (roomId) => {
@@ -294,11 +345,9 @@ io.on('connection', (socket) => {
     io.to(roomId).emit('room_users_count', room.users.size);
   });
 
-  // NEW: Become streamer
   socket.on('request_streamer_role', ({ roomId, userId }) => {
     const room = getRoom(roomId);
     
-    // If no streamer, assign this user
     if (!room.streamerId) {
       room.streamerId = userId;
       room.isStreamMode = true;
@@ -316,7 +365,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // NEW: Stream frame from streamer's browser
   socket.on('capture_frame', ({ roomId, frameData }) => {
     const room = getRoom(roomId);
     if (room.streamerId === socket.handshake.query.userId) {
@@ -328,7 +376,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // NEW: Stream player state from streamer
   socket.on('streamer_state', ({ roomId, playing, currentTime, videoUrl }) => {
     const room = getRoom(roomId);
     room.playing = playing;
@@ -386,7 +433,7 @@ io.on('connection', (socket) => {
       } else {
         io.to(roomId).emit('system_message', {
           id: Date.now(),
-          text: `⚠️ MP4 extraction failed. Streamer must stream from their browser.`,
+          text: `⚠️ MP4 extraction failed. Will play via TikTok Embed or Streamer Mode.`,
           timestamp: new Date().toLocaleTimeString(),
           isSystem: true
         });
@@ -493,7 +540,7 @@ process.on('uncaughtException', (error) => {
 const PORT = process.env.PORT || 3001;
 httpServer.listen(PORT, () => {
   console.log(`
-✅ TikTok Watch Together Server (v2.0.0 - Streamer Mode)
+✅ TikTok Watch Together Server (v2.0.1 - Fixed)
    Port: ${PORT}
    Environment: ${process.env.NODE_ENV || 'development'}
    Timestamp: ${new Date().toISOString()}\n`);
