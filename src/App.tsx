@@ -1,287 +1,190 @@
 import React, { useState, useEffect } from 'react';
-import Header from './components/Header';
-import VideoPlayer from './components/VideoPlayer';
-import Playlist from './components/Playlist';
-import Chat from './components/Chat';
-import ShareModal from './components/ShareModal';
-import {
-  generateRoomId,
-  generateUserId,
-  getCurrentTime
-} from './constants';
-import { VideoItem, ChatMessage } from './types';
-import { socket } from './socket';
+import { io } from 'socket.io-client';
+
+const socket = io('http://localhost:3001');
 
 function App() {
-  // Core State
-  const [roomId, setRoomId] = useState<string>('INIT');
-  const [userId, setUserId] = useState<string>('');
-  const [queue, setQueue] = useState<VideoItem[]>([]);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [currentVideoIndex, setCurrentVideoIndex] = useState<number>(0);
-  const [isShareModalOpen, setIsShareModalOpen] = useState<boolean>(false);
-  const [isInitialized, setIsInitialized] = useState<boolean>(false);
-  const [isPlaying, setIsPlaying] = useState<boolean>(false);
+  const [roomId, setRoomId] = useState('');
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [connected, setConnected] = useState(false);
+  const [inputRoom, setInputRoom] = useState('');
 
-  // Auto-Follow Sync State
-  const [syncNotification, setSyncNotification] = useState<string | null>(null);
-
-  // Initialize Room
+  // Socket connection
   useEffect(() => {
-    const urlParams = new URLSearchParams(window.location.search);
-    const urlRoomId = urlParams.get('room');
-    const savedRoomId = localStorage.getItem('wt_roomId');
-    const finalRoomId = urlRoomId || savedRoomId || generateRoomId();
+    socket.on('connect', () => console.log('Connected to server'));
+    socket.on('disconnect', () => setConnected(false));
 
-    let finalUserId = localStorage.getItem('wt_userId');
-    if (!finalUserId) {
-      finalUserId = generateUserId();
-      localStorage.setItem('wt_userId', finalUserId);
-    }
+    socket.on('sync_video', ({ url }) => {
+      console.log('Received video:', url);
+      setVideoUrl(url);
 
-    setRoomId(finalRoomId);
-    setUserId(finalUserId);
-
-    if (!savedRoomId || savedRoomId !== finalRoomId) {
-      localStorage.setItem('wt_roomId', finalRoomId);
-    }
-
-    const newUrl = new URL(window.location.href);
-    newUrl.searchParams.set('room', finalRoomId);
-    window.history.pushState({}, '', newUrl);
-
-    socket.emit('join_room', { roomId: finalRoomId, userId: finalUserId });
-    setIsInitialized(true);
+      // Reload TikTok embed script
+      setTimeout(() => {
+        if ((window as any).tiktok?.embed) {
+          (window as any).tiktok.embed.load();
+        }
+      }, 100);
+    });
 
     return () => {
-      socket.off('connect');
-      socket.off('disconnect');
+      socket.off('sync_video');
     };
   }, []);
 
-  // Socket Event Listeners
+  // Load TikTok embed script once
   useEffect(() => {
-    if (!isInitialized || roomId === 'INIT') return;
-
-    console.log(`[Room Init] Connected to room ${roomId}`);
-
-    const handleRoomState = (state: any) => {
-      console.log(`[Room State] Received state for room ${roomId}`, state);
-      if (state.queue) setQueue(state.queue);
-      if (state.messages) setMessages(state.messages);
-      if (typeof state.currentVideoIndex === 'number') setCurrentVideoIndex(state.currentVideoIndex);
-      if (typeof state.playing === 'boolean') setIsPlaying(state.playing);
-    };
-
-    const handleUpdateQueue = (newQueue: VideoItem[]) => {
-      console.log(`[Queue Update] Updated for room ${roomId}`, newQueue);
-      setQueue(newQueue);
-    };
-
-    const handleUpdateIndex = (index: number) => {
-      console.log(`[Index Update] Changed to ${index} in room ${roomId}`);
-      setCurrentVideoIndex(index);
-    };
-
-    const handleNewMessage = (message: ChatMessage) => {
-      console.log(`[Message] New message in room ${roomId}`);
-      setMessages(prev => [...prev.slice(-49), message]);
-    };
-
-    const handleSystemMessage = (data: { text: string }) => {
-      console.log(`[System Message] ${data.text}`);
-      const newMessage: ChatMessage = {
-        id: Date.now(),
-        user: 'SYSTEM',
-        text: data.text,
-        timestamp: getCurrentTime(),
-        isSystem: true,
-      };
-      setMessages(prev => [...prev.slice(-49), newMessage]);
-    };
-
-    // 🔄 Auto-Follow Change Video Handler
-    const handleChangeVideo = ({ url, timestamp, message }: { url: string; timestamp: number; message: string }) => {
-      console.log(`[🔄 Change Video] Streamer navigated to: ${url}`);
-
-      // Validate URL
-      if (!url || !url.includes('tiktok.com/') || !url.includes('/video/')) {
-        console.warn('[⚠️ Invalid URL] Ignoring:', url);
-        return;
-      }
-
-      // Show notification
-      setSyncNotification('🔄 Streamer scrolled to new video...');
-      setTimeout(() => setSyncNotification(null), 3000);
-
-      // Create new video item
-      const newItem: VideoItem = {
-        id: Date.now(),
-        url,
-        addedBy: 'Streamer',
-        addedAt: getCurrentTime(),
-      };
-
-      // Replace queue with synced video
-      setQueue([newItem]);
-      setCurrentVideoIndex(0);
-
-      // Add system message
-      const sysMessage: ChatMessage = {
-        id: Date.now(),
-        user: 'SYSTEM',
-        text: `🔄 ${message}`,
-        timestamp: getCurrentTime(),
-        isSystem: true,
-      };
-      setMessages(prev => [...prev.slice(-49), sysMessage]);
-    };
-
-    // Register listeners
-    socket.on('room_state', handleRoomState);
-    socket.on('update_queue', handleUpdateQueue);
-    socket.on('update_index', handleUpdateIndex);
-    socket.on('new_message', handleNewMessage);
-    socket.on('system_message', handleSystemMessage);
-    socket.on('change_video', handleChangeVideo);
-
-    return () => {
-      socket.off('room_state', handleRoomState);
-      socket.off('update_queue', handleUpdateQueue);
-      socket.off('update_index', handleUpdateIndex);
-      socket.off('new_message', handleNewMessage);
-      socket.off('system_message', handleSystemMessage);
-      socket.off('change_video', handleChangeVideo);
-    };
-  }, [isInitialized, roomId]);
-
-  // Handlers
-  const handleNewRoom = () => {
-    if (!window.confirm("Are you sure? This will start a new room.")) return;
-    const newId = generateRoomId();
-    localStorage.setItem('wt_roomId', newId);
-    window.location.href = `/?room=${newId}`;
-  };
-
-  const handleAddVideo = (url: string) => {
-    const newItem: VideoItem = {
-      id: Date.now(),
-      url,
-      addedBy: userId,
-      addedAt: getCurrentTime(),
-    };
-    console.log(`[Add Video] Adding to room ${roomId}:`, url);
-    socket.emit('add_video', { roomId, video: newItem });
-  };
-
-  const handleRemoveVideo = (index: number) => {
-    console.log(`[Remove Video] Removing index ${index} from room ${roomId}`);
-    socket.emit('remove_video', { roomId, index });
-  };
-
-  const handleSelectVideo = (index: number) => {
-    console.log(`[Select Video] Changing to index ${index} in room ${roomId}`);
-    socket.emit('change_video', { roomId, index });
-  };
-
-  const handleSendMessage = (text: string) => {
-    const newMessage: ChatMessage = {
-      id: Date.now(),
-      user: userId,
-      text,
-      timestamp: getCurrentTime(),
-      isSystem: false,
-    };
-    console.log(`[Send Message] Message in room ${roomId}:`, text);
-    socket.emit('send_message', { roomId, message: newMessage });
-  };
-
-  const handleNext = () => {
-    if (currentVideoIndex < queue.length - 1) {
-      handleSelectVideo(currentVideoIndex + 1);
+    if (!document.getElementById('tiktok-embed')) {
+      const script = document.createElement('script');
+      script.id = 'tiktok-embed';
+      script.src = 'https://www.tiktok.com/embed.js';
+      script.async = true;
+      document.body.appendChild(script);
     }
+  }, []);
+
+  const joinRoom = () => {
+    if (!inputRoom.trim()) return;
+    setRoomId(inputRoom);
+    socket.emit('join_room', { roomId: inputRoom });
+    setConnected(true);
   };
 
-  const handlePrev = () => {
-    if (currentVideoIndex > 0) {
-      handleSelectVideo(currentVideoIndex - 1);
-    }
+  // Extract video ID for embed
+  const getVideoId = (url: string) => {
+    const match = url.match(/video\/(\d+)/);
+    return match ? match[1] : '';
   };
-
-  if (!isInitialized || roomId === 'INIT') {
-    return <div className="flex items-center justify-center h-screen bg-dark text-main">Loading Room...</div>;
-  }
-
-  const currentVideo = queue[currentVideoIndex];
 
   return (
-    <div className="min-h-screen flex flex-col font-sans">
-      <Header
-        roomId={roomId}
-        onNewRoom={handleNewRoom}
-        onShare={() => setIsShareModalOpen(true)}
-      />
-
-      {/* Sync Notification Toast */}
-      {syncNotification && (
-        <div style={{
-          position: 'fixed',
-          top: '80px',
-          left: '50%',
-          transform: 'translateX(-50%)',
-          backgroundColor: 'rgba(0, 242, 234, 0.95)',
-          color: '#000',
-          padding: '12px 24px',
-          borderRadius: '8px',
-          fontWeight: 'bold',
-          zIndex: 1000,
-          boxShadow: '0 4px 20px rgba(0, 242, 234, 0.4)',
+    <div style={{
+      minHeight: '100vh',
+      background: 'linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 100%)',
+      color: 'white',
+      fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
+      padding: '20px'
+    }}>
+      {/* Header */}
+      <header style={{
+        textAlign: 'center',
+        marginBottom: '30px'
+      }}>
+        <h1 style={{
+          fontSize: '2rem',
+          background: 'linear-gradient(90deg, #00f2ea, #ff0050)',
+          WebkitBackgroundClip: 'text',
+          WebkitTextFillColor: 'transparent',
+          margin: 0
         }}>
-          {syncNotification}
+          🎬 TikTok Watch Together
+        </h1>
+      </header>
+
+      {/* Join Room */}
+      {!connected ? (
+        <div style={{
+          maxWidth: '400px',
+          margin: '100px auto',
+          textAlign: 'center'
+        }}>
+          <input
+            type="text"
+            placeholder="Enter Room ID"
+            value={inputRoom}
+            onChange={(e) => setInputRoom(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && joinRoom()}
+            style={{
+              width: '100%',
+              padding: '15px',
+              fontSize: '16px',
+              border: '2px solid #00f2ea',
+              borderRadius: '10px',
+              background: '#111',
+              color: 'white',
+              marginBottom: '15px'
+            }}
+          />
+          <button
+            onClick={joinRoom}
+            style={{
+              width: '100%',
+              padding: '15px',
+              fontSize: '16px',
+              fontWeight: 'bold',
+              border: 'none',
+              borderRadius: '10px',
+              background: 'linear-gradient(90deg, #00f2ea, #00d4ce)',
+              color: 'black',
+              cursor: 'pointer'
+            }}
+          >
+            Join Room
+          </button>
+        </div>
+      ) : (
+        /* Video Display */
+        <div style={{
+          maxWidth: '500px',
+          margin: '0 auto'
+        }}>
+          <div style={{
+            background: 'rgba(0,242,234,0.1)',
+            border: '1px solid rgba(0,242,234,0.3)',
+            borderRadius: '10px',
+            padding: '15px',
+            marginBottom: '20px',
+            textAlign: 'center'
+          }}>
+            <span style={{ color: '#00f2ea' }}>🟢 Room: {roomId}</span>
+          </div>
+
+          {videoUrl ? (
+            <div style={{
+              background: '#111',
+              borderRadius: '15px',
+              padding: '20px',
+              border: '1px solid #333'
+            }}>
+              <div style={{
+                background: 'rgba(0,242,234,0.1)',
+                padding: '10px',
+                borderRadius: '8px',
+                marginBottom: '15px',
+                fontSize: '14px',
+                color: '#00f2ea'
+              }}>
+                🔄 Synced from Streamer
+              </div>
+
+              <blockquote
+                className="tiktok-embed"
+                cite={videoUrl}
+                data-video-id={getVideoId(videoUrl)}
+                style={{ maxWidth: '325px', margin: '0 auto' }}
+              >
+                <section>
+                  <a href={videoUrl} target="_blank" rel="noopener noreferrer">
+                    Loading TikTok...
+                  </a>
+                </section>
+              </blockquote>
+            </div>
+          ) : (
+            <div style={{
+              background: '#111',
+              borderRadius: '15px',
+              padding: '60px 20px',
+              textAlign: 'center',
+              border: '1px solid #333'
+            }}>
+              <div style={{ fontSize: '48px', marginBottom: '15px' }}>📺</div>
+              <div style={{ color: '#666' }}>Waiting for streamer...</div>
+              <div style={{ color: '#444', fontSize: '12px', marginTop: '10px' }}>
+                Ask the streamer to start syncing on TikTok
+              </div>
+            </div>
+          )}
         </div>
       )}
-
-      <main className="main-grid">
-        {/* Left Column: Player + Playlist */}
-        <div className="flex flex-col gap-lg h-full overflow-hidden">
-          <div className="flex-1 min-h-[400px]">
-            <VideoPlayer
-              url={currentVideo?.url || null}
-              currentIndex={currentVideoIndex}
-              totalVideos={queue.length}
-              onNext={handleNext}
-              onPrev={handlePrev}
-              socket={socket}
-              roomId={roomId}
-            />
-          </div>
-
-          <div className="h-[300px]">
-            <Playlist
-              queue={queue}
-              currentIndex={currentVideoIndex}
-              onAddVideo={handleAddVideo}
-              onRemoveVideo={handleRemoveVideo}
-              onSelectVideo={handleSelectVideo}
-            />
-          </div>
-        </div>
-
-        {/* Right Column: Chat */}
-        <div className="h-full">
-          <Chat
-            messages={messages}
-            onSendMessage={handleSendMessage}
-            currentUserId={userId}
-          />
-        </div>
-      </main>
-
-      <ShareModal
-        isOpen={isShareModalOpen}
-        onClose={() => setIsShareModalOpen(false)}
-        roomId={roomId}
-      />
     </div>
   );
 }
